@@ -8,6 +8,8 @@
     
     <ItemGroup>
         <PackageReference Include="Akka.Cluster.Hosting"/>
+        <PackageReference Include="Akka.Persistence.Hosting"/>
+        <PackageReference Include="MessagePack"/>
     </ItemGroup>
 
 </Project>

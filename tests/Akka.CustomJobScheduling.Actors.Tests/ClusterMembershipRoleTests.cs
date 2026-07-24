@@ -36,18 +36,17 @@ public class WorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
         builder.AddHocon(ClusterRoleHocon.For("worker"), HoconAddMode.Prepend);
 
     [Fact]
-    public async Task Publishes_NodeJoined_for_a_worker()
+    public async Task Includes_a_worker_in_the_membership_snapshot()
     {
         var probe = CreateTestProbe();
         new ClusterMembershipSource(Sys, new JobSize(100), "worker").Subscribe(probe);
 
         await ClusterRoleHocon.JoinAsync(this);
 
-        var joined = await probe.ExpectMsgAsync<JobTrackerCommands.NodeJoined>(
+        var sync = await probe.ExpectMsgAsync<JobTrackerCommands.SyncNodes>(
             TimeSpan.FromSeconds(10));
 
-        Assert.Equal(Akka.Cluster.Cluster.Get(Sys).SelfAddress, joined.NodeAddress);
-        Assert.Equal(new JobSize(100), joined.MaxCapacity);
+        Assert.Equal(new JobSize(100), sync.Members[Akka.Cluster.Cluster.Get(Sys).SelfAddress]);
     }
 }
 
@@ -65,15 +64,20 @@ public class NonWorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
         builder.AddHocon(ClusterRoleHocon.For("api"), HoconAddMode.Prepend);
 
     [Fact]
-    public async Task Publishes_nothing_for_a_non_worker()
+    public async Task Leaves_a_non_worker_out_of_the_membership_snapshot()
     {
         var probe = CreateTestProbe();
         new ClusterMembershipSource(Sys, new JobSize(100), "worker").Subscribe(probe);
 
         await ClusterRoleHocon.JoinAsync(this);
 
-        // The node is Up and the translator saw the MemberUp — it just isn't ours to schedule onto.
-        await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(2));
+        // The node is Up and the translator saw it — it just isn't ours to schedule onto, so the
+        // reconciliation reports an empty worker set rather than omitting the message.
+        var sync = await probe.ExpectMsgAsync<JobTrackerCommands.SyncNodes>(
+            TimeSpan.FromSeconds(10));
+
+        Assert.Empty(sync.Members);
+        await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(500));
     }
 }
 

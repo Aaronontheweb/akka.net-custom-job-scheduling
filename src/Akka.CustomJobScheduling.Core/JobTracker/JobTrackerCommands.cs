@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Akka.Actor;
 using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.Jobs;
@@ -86,6 +87,21 @@ public static class JobTrackerCommands
     /// <see cref="ClusterEvent.MemberRemoved"/> and <see cref="NodeLeft"/> does the requeueing.
     /// </remarks>
     public sealed record NodeReachabilityChanged(Address NodeAddress, bool Reachable)
+        : IJobTrackerCommand;
+
+    /// <summary>
+    /// The authoritative set of worker nodes, as a whole. Anything the tracker believes in that
+    /// isn't listed here has left; anything listed that it doesn't know about is new.
+    /// </summary>
+    /// <remarks>
+    /// Derived from <see cref="ClusterEvent.CurrentClusterState"/>, which arrives on subscribe.
+    /// Incremental events alone can't recover a tracker that was down while a node left: the
+    /// <see cref="ClusterEvent.MemberRemoved"/> went to a process that no longer exists, and
+    /// replaying the journal faithfully restores a node that is gone. Reconciling against the live
+    /// membership is what closes that gap.
+    /// </remarks>
+    /// <param name="Members">Every worker node the cluster currently has, with its capacity.</param>
+    public sealed record SyncNodes(ImmutableDictionary<Address, JobSize> Members)
         : IJobTrackerCommand;
 
     /// <summary>

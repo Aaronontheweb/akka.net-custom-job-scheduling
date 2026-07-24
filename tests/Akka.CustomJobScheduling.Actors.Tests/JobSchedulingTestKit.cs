@@ -4,7 +4,9 @@ using Akka.CustomJobScheduling.Core.Actors;
 using Akka.CustomJobScheduling.Core.Actors.Cluster;
 using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
+using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
+using Akka.Persistence.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Xunit.Abstractions;
@@ -85,7 +87,11 @@ public abstract class JobSchedulingTestKit : Akka.Hosting.TestKit.TestKit
                 HoconAddMode.Prepend);
         }
 
-        builder.WithJobSchedulingActors(ExecutionMode, Nodes);
+        builder
+            .AddJobSchedulingSerializer()
+            .WithInMemoryJournal()
+            .WithInMemorySnapshotStore()
+            .WithJobSchedulingActors(ExecutionMode, Nodes);
     }
 
     /// <summary>

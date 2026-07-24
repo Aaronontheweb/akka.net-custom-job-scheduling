@@ -1,6 +1,13 @@
 <Project>
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Applies the versions below to transitive dependencies too. Aspire.Hosting pulls MessagePack
+      2.5.192, which carries published advisories; with TreatWarningsAsErrors that fails the build.
+      Pinning centrally lifts it everywhere rather than relying on each project to reference the
+      package it doesn't otherwise use.
+    -->
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <!-- Nuget package versions -->
     <AkkaHostingVersion>1.5.59</AkkaHostingVersion>
     <AkkaAspireVersion>0.2.0</AkkaAspireVersion>
@@ -10,6 +17,7 @@
   <!-- App dependencies -->
   <ItemGroup>
     <PackageVersion Include="Akka.Cluster.Hosting" Version="$(AkkaHostingVersion)"/>
+    <PackageVersion Include="Akka.Persistence.Hosting" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Akka.Persistence.Redis.Hosting" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Aaron.Akka.Aspire" Version="$(AkkaAspireVersion)" />
     <PackageVersion Include="Aaron.Akka.Aspire.Hosting" Version="$(AkkaAspireVersion)" />

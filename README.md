@@ -59,6 +59,24 @@ The channel drops oldest when a client is slow. That's safe *only* because every
 
 Submissions route through the submitter shard region rather than straight at the tracker, so the submitter entity stays re-acquirable by id after a recovery.
 
+## Persistence
+
+`JobTrackerActor` is a `ReceivePersistentActor` on a fixed persistence id (`job-tracker`) — fixed because the singleton must resume the same stream after failing over to a different host. Commands are validated, the resulting events are persisted, and only then does the actor fold them in, reply, and dispatch. Nothing is ever handed to a worker that hasn't been recorded first.
+
+Snapshots every 200 events bound replay time; the journal remains the source of truth.
+
+### Reconciling on recovery
+
+Replay is faithful, which is the problem: a node that left while the tracker was down still appears in the restored map, and no `MemberRemoved` is ever coming for it. So on subscribe the membership source reports the *whole* current member set as `SyncNodes`, and the tracker reconciles — dropping nodes that are gone and requeueing their work before placing anything new. The local membership fake mirrors that exactly, which is what makes the failover path testable.
+
+## Serialization
+
+`JobSchedulingSerializer` is a `SerializerWithStringManifest` over MessagePack. Manifests are short, stable strings (`e:job-accepted`, `c:submit-job`) rather than type names, so classes can be renamed or moved between namespaces without orphaning events already on disk.
+
+Payloads are written by hand rather than through a reflection-based resolver: the domain records stay free of serialization attributes, and the wire schema is something you can read. Every composite is framed as an array whose readers tolerate extra trailing fields, giving one evolution rule — **append at the end, never reorder or remove**.
+
+`JobStreamMessages` is deliberately *not* registered. It carries a `ChannelReader` and a child `IActorRef`, is in-process by construction, and leaving it unregistered means an accidental remote send fails loudly instead of quietly.
+
 ### Losing a node
 
 Unreachable nodes stop receiving new work but keep what they already hold. Requeueing waits for `MemberRemoved`, because a node on the far side of a healing partition is still running its jobs — moving them on unreachability alone would run the same job twice.

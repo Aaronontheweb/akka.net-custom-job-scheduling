@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Akka.Actor;
 using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.JobTracker;
@@ -32,13 +33,17 @@ internal sealed class ClusterEventTranslator : ReceiveActor
         // CurrentClusterState arrives first and describes everyone already present, which is what
         // lets a tracker that starts late (or restarts) rebuild its node map without waiting for
         // the next membership change.
+        // The snapshot describes the whole cluster, so it reconciles rather than announcing members
+        // one at a time. That is what lets a tracker recovering from its journal discover that a
+        // node it remembers has since left — no MemberRemoved is coming for it.
         Receive<ClusterEvent.CurrentClusterState>(state =>
         {
-            foreach (var member in state.Members)
-            {
-                if (member.Status is MemberStatus.Up or MemberStatus.WeaklyUp)
-                    Join(member);
-            }
+            var members = state.Members
+                .Where(member => member.Status is MemberStatus.Up or MemberStatus.WeaklyUp)
+                .Where(RunsWork)
+                .ToImmutableDictionary(member => member.Address, _ => _defaultCapacity);
+
+            _target.Tell(new JobTrackerCommands.SyncNodes(members));
 
             foreach (var unreachable in state.Unreachable)
             {

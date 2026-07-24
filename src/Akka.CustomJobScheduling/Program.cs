@@ -3,6 +3,7 @@ using Aaron.Akka.Discovery.Redis;
 using Akka.Cluster.Hosting;
 using Akka.CustomJobScheduling;
 using Akka.CustomJobScheduling.Core.Actors;
+using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
 using Akka.Persistence.Redis.Hosting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -84,7 +85,9 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
                 .WithConnectivityCheck(
                     tags: ["ready", "persistence", "redis", "snapshot-store", "connectivity"]));
 
-    akkaBuilder.WithJobSchedulingActors(AkkaExecutionMode.Clustered);
+    akkaBuilder
+        .AddJobSchedulingSerializer()
+        .WithJobSchedulingActors(AkkaExecutionMode.Clustered);
 
     if (configuration.GetValue(JobLoadGenerator.EnabledKey, false))
         akkaBuilder.WithSyntheticJobTraffic();

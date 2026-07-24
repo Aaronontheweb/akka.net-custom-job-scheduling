@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Akka.Actor;
+using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.Jobs;
 
 namespace Akka.CustomJobScheduling.Core.JobTracker;
@@ -74,7 +75,7 @@ public sealed record JobTrackerDecision(
 /// comparison for the immutable collections. Compare the members instead.
 /// </para>
 /// </remarks>
-public sealed record JobTrackerState
+public sealed record JobTrackerState : IJobTrackerDomain
 {
     public static readonly JobTrackerState Empty = new();
 
@@ -128,6 +129,7 @@ public sealed record JobTrackerState
             JobTrackerCommands.NodeJoined c => OnNodeJoined(c, now),
             JobTrackerCommands.NodeLeft c => OnNodeLeft(c, now),
             JobTrackerCommands.NodeReachabilityChanged c => OnNodeReachabilityChanged(c, now),
+            JobTrackerCommands.SyncNodes c => OnSyncNodes(c, now),
 
             // Drain is handled by Decide itself — the tick exists only to trigger it.
             _ => JobTrackerDecision.None
@@ -326,6 +328,52 @@ public sealed record JobTrackerState
                 existing.Status,
                 command.Reachable,
                 now));
+    }
+
+    /// <summary>
+    /// Reconciles the whole node map against the authoritative membership in one step.
+    /// </summary>
+    /// <remarks>
+    /// Needed because the tracker is persistent. Replaying the journal faithfully restores nodes
+    /// that were present when the events were written; if one of them left while the tracker was
+    /// down, no <see cref="JobTrackerCommands.NodeLeft"/> is ever coming for it, and its jobs would
+    /// stay <see cref="JobStatus.Running"/> on a node that isn't there. Removals are emitted before
+    /// additions so freed capacity is available to the placement pass that follows.
+    /// </remarks>
+    private JobTrackerDecision OnSyncNodes(JobTrackerCommands.SyncNodes command, DateTimeOffset now)
+    {
+        var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
+
+        var departed = Nodes.Keys
+            .Where(address => !command.Members.ContainsKey(address))
+            .OrderBy(address => address.ToString(), StringComparer.Ordinal);
+
+        foreach (var address in departed)
+        {
+            foreach (var job in JobsRunningOn(address))
+            {
+                events.Add(new JobTrackerEvents.JobRequeued(
+                    job.Id,
+                    address,
+                    "Node is no longer a cluster member.",
+                    now));
+            }
+
+            events.Add(new JobTrackerEvents.NodeRemoved(address, now));
+        }
+
+        var arrived = command.Members
+            .Where(member => !Nodes.ContainsKey(member.Key))
+            .OrderBy(member => member.Key.ToString(), StringComparer.Ordinal);
+
+        foreach (var (address, capacity) in arrived)
+        {
+            events.Add(new JobTrackerEvents.NodeAdded(address, MemberStatus.Up, capacity, now));
+        }
+
+        return events.Count == 0
+            ? JobTrackerDecision.None
+            : JobTrackerDecision.Record([.. events]);
     }
 
     private static JobTrackerDecision UnknownJob(JobId id) =>

@@ -3,7 +3,9 @@ using Aaron.Akka.Discovery.Redis;
 using Akka.Cluster.Hosting;
 using Akka.CustomJobScheduling.Api.Endpoints;
 using Akka.CustomJobScheduling.Core.Actors;
+using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
+using Akka.Persistence.Hosting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
@@ -48,6 +50,9 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
             .GetSection("Jobs:LocalNodes").Get<string[]>() ?? ["node-a", "node-b"];
 
         akkaBuilder
+            .AddJobSchedulingSerializer()
+            .WithInMemoryJournal()
+            .WithInMemorySnapshotStore()
             .WithJobSchedulingActors(AkkaExecutionMode.LocalTest, localNodes)
             .WithAnnouncedLocalNodes(localNodes)
             .WithJobStreams();
@@ -71,6 +76,7 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
         clusterConfigure: cluster => cluster.Roles = ["api"]);
 
     akkaBuilder
+        .AddJobSchedulingSerializer()
         .WithAkkaClusterReadinessCheck()
         .WithJobSchedulingClient(AkkaExecutionMode.Clustered);
 });

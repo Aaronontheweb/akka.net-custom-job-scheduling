@@ -4,6 +4,7 @@ using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.Event;
 using Akka.Hosting;
+using Akka.Persistence;
 
 namespace Akka.CustomJobScheduling.Core.Actors;
 
@@ -28,10 +29,19 @@ namespace Akka.CustomJobScheduling.Core.Actors;
 /// <see cref="IActorRef"/> is meaningless after a restart, so persisting one would be a lie.
 /// </para>
 /// </remarks>
-public sealed class JobTrackerActor : ReceiveActor, IWithTimers
+public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 {
     /// <summary>Well-known name, also the singleton name in clustered mode.</summary>
     public const string Name = "job-tracker";
+
+    /// <summary>
+    /// Fixed, because there is exactly one tracker in the cluster. A singleton that failed over to
+    /// another node must resume the same stream, so this cannot include the node identity.
+    /// </summary>
+    public const string PersistentId = "job-tracker";
+
+    /// <summary>Snapshot cadence. Bounds replay time; the journal is still the source of truth.</summary>
+    private const int SnapshotEvery = 200;
 
     private const string DrainTimerKey = "drain-queue";
     private static readonly TimeSpan DrainInterval = TimeSpan.FromSeconds(5);
@@ -59,17 +69,45 @@ public sealed class JobTrackerActor : ReceiveActor, IWithTimers
         _submitters = submitters;
         _time = time;
 
-        Receive<IJobTrackerCommand>(HandleCommand);
-        Receive<JobTrackerQueries.GetJobStatus>(query => Sender.Tell(_state.GetJobStatus(query.Id)));
-        Receive<JobTrackerQueries.GetQueueStatus>(_ => Sender.Tell(_state.GetQueueStatus()));
-        Receive<JobTrackerQueries.SubscribeToJob>(HandleSubscribe);
-        Receive<JobTrackerQueries.UnsubscribeFromJob>(HandleUnsubscribe);
-        Receive<Terminated>(terminated => DropSubscriber(terminated.ActorRef));
+        Command<IJobTrackerCommand>(HandleCommand);
+        Command<JobTrackerQueries.GetJobStatus>(query => Sender.Tell(_state.GetJobStatus(query.Id)));
+        Command<JobTrackerQueries.GetQueueStatus>(_ => Sender.Tell(_state.GetQueueStatus()));
+        Command<JobTrackerQueries.SubscribeToJob>(HandleSubscribe);
+        Command<JobTrackerQueries.UnsubscribeFromJob>(HandleUnsubscribe);
+        Command<Terminated>(terminated => DropSubscriber(terminated.ActorRef));
+        Command<SaveSnapshotSuccess>(success =>
+            DeleteSnapshots(new SnapshotSelectionCriteria(success.Metadata.SequenceNr - 1)));
+        Command<SaveSnapshotFailure>(failure =>
+            _log.Warning("Snapshot at sequence {SequenceNr} failed: {Reason}",
+                failure.Metadata.SequenceNr, failure.Cause.Message));
+        Command<DeleteSnapshotsSuccess>(_ => { });
+        Command<DeleteSnapshotsFailure>(_ => { });
+
+        Recover<SnapshotOffer>(offer =>
+        {
+            if (offer.Snapshot is JobTrackerState snapshot)
+                _state = snapshot;
+        });
+
+        Recover<IJobTrackerEvent>(@event => _state = _state.Apply(@event));
+        Recover<RecoveryCompleted>(_ => OnRecoveryCompleted());
     }
 
-    protected override void PreStart()
+    public override string PersistenceId => PersistentId;
+
+    private void OnRecoveryCompleted()
     {
+        _log.Info(
+            "Recovered tracker at sequence {SequenceNr}: {JobCount} jobs, {NodeCount} nodes",
+            LastSequenceNr,
+            _state.Jobs.Count,
+            _state.Nodes.Count);
+
+        // Subscribe only once recovery is done. The membership source replies with the full member
+        // set, and reconciling that against the restored node map is what drops nodes that left
+        // while this tracker (or its predecessor on another host) was down.
         _membership.Subscribe(Self);
+
         Timers.StartPeriodicTimer(
             DrainTimerKey,
             JobTrackerCommands.DrainQueue.Instance,
@@ -83,17 +121,36 @@ public sealed class JobTrackerActor : ReceiveActor, IWithTimers
     {
         var decision = _state.Decide(command, _time.GetUtcNow());
 
-        // Persistence slots in exactly here: PersistAll(decision.Events, ...) and move the rest of
-        // this method into the callback. Nothing else about the actor has to change.
-        _state = _state.Fold(decision.Events);
-
-        if (decision.Response is not null)
-            Sender.Tell(decision.Response);
-
-        foreach (var @event in decision.Events)
+        if (decision.Events.IsEmpty)
         {
-            React(@event);
+            if (decision.Response is not null)
+                Sender.Tell(decision.Response);
+
+            return;
         }
+
+        // Sender is captured because the persist callback runs later, by which point Sender belongs
+        // to whatever message is being handled then.
+        var replyTo = Sender;
+        var remaining = decision.Events.Length;
+
+        PersistAll(decision.Events, @event =>
+        {
+            _state = _state.Apply(@event);
+
+            // React only after the event is durable. Dispatching work we haven't recorded would
+            // leave a job running on a node the tracker forgets about the moment it restarts.
+            React(@event);
+
+            if (--remaining > 0)
+                return;
+
+            if (decision.Response is not null)
+                replyTo.Tell(decision.Response);
+
+            if (LastSequenceNr % SnapshotEvery == 0)
+                SaveSnapshot(_state);
+        });
     }
 
     /// <summary>
