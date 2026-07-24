@@ -29,17 +29,37 @@ public sealed record NodeStatus(
     JobSize MaximumCapacity,
     JobSize CapacityInUse)
 {
-    public JobSize AvailableCapacity =>
-        CapacityInUse >= MaximumCapacity ? JobSize.Zero : MaximumCapacity - CapacityInUse;
+    public JobSize AvailableCapacity => MaximumCapacity.Reduce(CapacityInUse);
+
+    /// <summary>
+    /// Whether this node is in a state where it may be handed new work at all.
+    /// </summary>
+    public bool IsEligible => Status is MemberStatus.Up or MemberStatus.WeaklyUp && Reachable;
 
     public bool HasCapacityFor(JobDefinition job) => AvailableCapacity >= job.Size;
 
-    public bool CanAccept(JobDefinition job)
-    {
-        return Status is MemberStatus.Up or MemberStatus.WeaklyUp
-               && Reachable
-               && HasCapacityFor(job);
-    }
+    public bool CanAccept(JobDefinition job) => IsEligible && HasCapacityFor(job);
+
+    /// <summary>
+    /// A node that has just joined the cluster with nothing running on it yet.
+    /// </summary>
+    public static NodeStatus Joined(
+        Address address,
+        MemberStatus status,
+        JobSize maxCapacity,
+        DateTimeOffset joinedAt) =>
+        new(address, status, Reachable: true, joinedAt, maxCapacity, JobSize.Zero);
+
+    public NodeStatus WithStatus(MemberStatus status, bool reachable, DateTimeOffset at) =>
+        this with { Status = status, Reachable = reachable, LastUpdatedAt = at };
+
+    /// <summary>Commits capacity to a job placed on this node.</summary>
+    public NodeStatus Reserve(JobSize amount) =>
+        this with { CapacityInUse = CapacityInUse + amount };
+
+    /// <summary>Gives capacity back once a job leaves this node.</summary>
+    public NodeStatus Release(JobSize amount) =>
+        this with { CapacityInUse = CapacityInUse.Reduce(amount) };
 }
 
 /// <summary>
@@ -50,7 +70,12 @@ public enum JobStatus
     Waiting = 0,
     Running = 1,
     Faulted = 2,
-    Completed = 3
+    Completed = 3,
+
+    /// <summary>
+    /// Withdrawn by the submitter before it finished.
+    /// </summary>
+    Cancelled = 4
 }
 
 /// <summary>
