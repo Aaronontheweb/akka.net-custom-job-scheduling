@@ -17,4 +17,8 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Akka.CustomJobScheduling.Core\Akka.CustomJobScheduling.Core.csproj" />
+  </ItemGroup>
+
 </Project>

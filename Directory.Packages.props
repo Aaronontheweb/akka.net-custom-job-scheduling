@@ -24,6 +24,8 @@
   </ItemGroup>
   <!-- Test dependencies -->
   <ItemGroup>
+    <PackageVersion Include="Akka.Hosting.TestKit" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="9.10.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
