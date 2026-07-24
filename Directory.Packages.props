@@ -2,12 +2,24 @@
   <PropertyGroup>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <!-- Nuget package versions -->
-    <AkkaHostingVersion>1.5.70</AkkaHostingVersion>
+    <AkkaHostingVersion>1.5.59</AkkaHostingVersion>
+    <AkkaAspireVersion>0.2.0</AkkaAspireVersion>
+    <AspireVersion>13.3.5</AspireVersion>
+    <OpenTelemetryVersion>1.15.2</OpenTelemetryVersion>
   </PropertyGroup>
   <!-- App dependencies -->
   <ItemGroup>
     <PackageVersion Include="Akka.Hosting" Version="$(AkkaHostingVersion)"/>
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.9"/>
+    <PackageVersion Include="Aaron.Akka.Aspire" Version="$(AkkaAspireVersion)" />
+    <PackageVersion Include="Aaron.Akka.Aspire.Hosting" Version="$(AkkaAspireVersion)" />
+    <PackageVersion Include="Aaron.Akka.Discovery.Redis" Version="$(AkkaAspireVersion)" />
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="$(AspireVersion)" />
+    <PackageVersion Include="Aspire.Hosting.Redis" Version="$(AspireVersion)" />
+    <PackageVersion Include="MessagePack" Version="3.1.8" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="$(OpenTelemetryVersion)" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
   </ItemGroup>
   <!-- Test dependencies -->
   <!-- SourceLink support for all Akka.NET projects -->

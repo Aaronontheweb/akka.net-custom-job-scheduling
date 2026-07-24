@@ -6,5 +6,6 @@
     <File Path="NuGet.Config" />
     <File Path="README.md" />
   </Folder>
-  <Project Path="src/Akka.Console/Akka.Console.csproj" />
+  <Project Path="src/Akka.CustomJobScheduling.AppHost/Akka.CustomJobScheduling.AppHost.csproj" />
+  <Project Path="src/Akka.CustomJobScheduling/Akka.CustomJobScheduling.csproj" />
 </Solution>
