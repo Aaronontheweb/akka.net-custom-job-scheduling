@@ -6,8 +6,16 @@ The repository currently contains infrastructure only. The job coordinator, pers
 
 ## Projects
 
-- `Akka.CustomJobScheduling.AppHost` provisions Redis discovery and starts three service replicas.
-- `Akka.CustomJobScheduling` joins the Akka.NET cluster through the Aspire plugin and exposes health endpoints.
+- `Akka.CustomJobScheduling.AppHost` provisions Redis and starts three service replicas.
+- `Akka.CustomJobScheduling` joins the Akka.NET cluster through the Aspire plugin and configures Redis-backed Akka.Persistence.
+
+The sample intentionally shares one Redis resource for cluster discovery, the persistence journal, and snapshot storage. Separate key prefixes isolate persisted job state from discovery records.
+
+## Health Checks
+
+- `/healthz` reports every registered check.
+- `/healthz/live` reports ActorSystem liveness.
+- `/healthz/ready` reports cluster readiness, persistence plugin health, and Redis connectivity.
 
 ## Prerequisites
 

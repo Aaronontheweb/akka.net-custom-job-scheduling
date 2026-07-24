@@ -1,7 +1,10 @@
 ﻿using Aaron.Akka.Aspire;
 using Aaron.Akka.Discovery.Redis;
+using Akka.Cluster.Hosting;
 using Akka.Hosting;
+using Akka.Persistence.Redis.Hosting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
@@ -26,6 +29,10 @@ builder.Services.AddOpenTelemetry()
 
 builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =>
 {
+    var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+    var redisConnection = configuration.GetConnectionString("akka-discovery")
+        ?? throw new InvalidOperationException("The shared Redis connection string is required.");
+
     akkaBuilder.ConfigureLoggers(setup =>
     {
         setup.ClearLoggers();
@@ -33,17 +40,39 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
     });
 
     akkaBuilder.WithAspireClusterBootstrap(serviceProvider,
-        configureDiscovery: (hosting, configuration) =>
+        configureDiscovery: (hosting, clusterConfiguration) =>
         {
-            var redisConnection = configuration.GetConnectionString("akka-discovery");
-            if (!string.IsNullOrWhiteSpace(redisConnection))
-            {
-                hosting.WithRedisDiscovery(
-                    redisConnection,
-                    configuration["Akka:Cluster:ServiceName"]);
-            }
+            hosting.WithRedisDiscovery(
+                redisConnection,
+                clusterConfiguration["Akka:Cluster:ServiceName"]);
         },
         clusterConfigure: cluster => cluster.Roles = ["worker"]);
+
+    akkaBuilder
+        .WithAkkaClusterReadinessCheck()
+        .WithRedisPersistence(
+            journalOptions: new RedisJournalOptions
+            {
+                ConfigurationString = redisConnection,
+                KeyPrefix = "job-scheduling:journal"
+            },
+            snapshotOptions: new RedisSnapshotOptions
+            {
+                ConfigurationString = redisConnection,
+                KeyPrefix = "job-scheduling:snapshots"
+            },
+            journalBuilder: journal => journal
+                .WithHealthCheck(
+                    HealthStatus.Unhealthy,
+                    tags: ["ready", "persistence", "redis", "journal"])
+                .WithConnectivityCheck(
+                    tags: ["ready", "persistence", "redis", "journal", "connectivity"]),
+            snapshotBuilder: snapshots => snapshots
+                .WithHealthCheck(
+                    HealthStatus.Unhealthy,
+                    tags: ["ready", "persistence", "redis", "snapshot-store"])
+                .WithConnectivityCheck(
+                    tags: ["ready", "persistence", "redis", "snapshot-store", "connectivity"]));
 });
 
 builder.Services.AddHealthChecks();
@@ -57,7 +86,7 @@ app.MapHealthChecks("/healthz/live", new HealthCheckOptions
 });
 app.MapHealthChecks("/healthz/ready", new HealthCheckOptions
 {
-    Predicate = check => check.Tags.Contains("readiness")
+    Predicate = check => check.Tags.Contains("ready")
 });
 app.MapGet("/", () => Results.Ok(new { Service = "Akka.CustomJobScheduling" }));
 
