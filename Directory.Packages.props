@@ -9,7 +9,7 @@
   </PropertyGroup>
   <!-- App dependencies -->
   <ItemGroup>
-    <PackageVersion Include="Akka.Hosting" Version="$(AkkaHostingVersion)"/>
+    <PackageVersion Include="Akka.Cluster.Hosting" Version="$(AkkaHostingVersion)"/>
     <PackageVersion Include="Akka.Persistence.Redis.Hosting" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Aaron.Akka.Aspire" Version="$(AkkaAspireVersion)" />
     <PackageVersion Include="Aaron.Akka.Aspire.Hosting" Version="$(AkkaAspireVersion)" />
