@@ -6,9 +6,12 @@ Jobs are submitted with a size in work units. A cluster singleton tracks every n
 
 ## Projects
 
-- `Akka.CustomJobScheduling.AppHost` provisions Redis and starts three service replicas.
-- `Akka.CustomJobScheduling` joins the Akka.NET cluster through the Aspire plugin, configures Redis-backed Akka.Persistence, and generates synthetic job traffic.
+- `Akka.CustomJobScheduling.AppHost` provisions Redis and starts the worker replicas and the API.
+- `Akka.CustomJobScheduling` is a worker: it joins under the `worker` role, hosts the tracker singleton and a job receiver, and configures Redis-backed Akka.Persistence.
+- `Akka.CustomJobScheduling.Api` is the HTTP surface. It joins under the `api` role and runs no jobs — it reaches the tracker singleton and the submitter shard region through proxies.
 - `Akka.CustomJobScheduling.Core` holds the domain model, the scheduling state machine, and the actors.
+
+Only nodes carrying the `worker` role count as capacity. The API joins the same cluster but hosts no receiver, so the tracker must not place work there.
 
 The sample intentionally shares one Redis resource for cluster discovery, the persistence journal, and snapshot storage. Separate key prefixes isolate persisted job state from discovery records.
 
@@ -35,6 +38,26 @@ JobReceiverActor   one per node; entry point for work
 JobExecutorActor   one per running job; stops when done
 JobSubmitterActor  shard entity per submitter; receives progress
 ```
+
+## API
+
+| | | |
+| --- | --- | --- |
+| `POST` | `/jobs` | `{"id":"...","size":25,"submitterId":"..."}` → `202` + `Location` |
+| `GET` | `/jobs/{id}` | Current status |
+| `GET` | `/jobs/{id}/events` | Server-sent events until the job finishes |
+| `DELETE` | `/jobs/{id}?submitterId=...&reason=...` | Cancel |
+| `GET` | `/cluster/queue` | Queue depth and per-node capacity |
+
+Rejections map onto status codes directly: duplicate id `409`, unknown job `404`, already finished `409`, wrong submitter `403`, larger than any node `422`.
+
+### Streaming
+
+An HTTP response isn't an `IActorRef`, so a `JobStreamSupervisor` spawns one short-lived bridge actor per connection. The bridge subscribes to the tracker, writes each push into a bounded channel, and completes the channel when the job reaches a terminal state — so the handler's `await foreach` ends on its own.
+
+The channel drops oldest when a client is slow. That's safe *only* because every notification carries absolute progress rather than a delta: a reader that misses 40% → 50% is still correct once it sees 60%.
+
+Submissions route through the submitter shard region rather than straight at the tracker, so the submitter entity stays re-acquirable by id after a recovery.
 
 ### Losing a node
 

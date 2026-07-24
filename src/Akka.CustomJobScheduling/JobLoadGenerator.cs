@@ -23,6 +23,12 @@ public static class JobLoadGenerator
     private const uint MinJobSize = 5;
     private const uint MaxJobSize = 45;
 
+    /// <summary>
+    /// Configuration flag. Off by default now that the API can submit real work; turn it on to
+    /// watch the scheduler move without driving traffic by hand.
+    /// </summary>
+    public const string EnabledKey = "Jobs:LoadGenerator:Enabled";
+
     public static AkkaConfigurationBuilder WithSyntheticJobTraffic(
         this AkkaConfigurationBuilder builder) =>
         builder.AddStartup((system, registry) =>

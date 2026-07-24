@@ -2,6 +2,7 @@ using Akka.Actor;
 using Akka.Cluster.Hosting;
 using Akka.Cluster.Sharding;
 using Akka.CustomJobScheduling.Core.Actors.Cluster;
+using Akka.CustomJobScheduling.Core.Actors.Streaming;
 using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.DependencyInjection;
@@ -51,7 +52,8 @@ public static class JobSchedulingHostingExtensions
             services.TryAddSingletonSource<IClusterMembershipSource>(sp =>
                 new ClusterMembershipSource(
                     sp.GetRequiredService<ActorSystem>(),
-                    new JobSize(nodeCapacity)));
+                    new JobSize(nodeCapacity),
+                    WorkerRole));
 
             services.TryAddSingletonSource<IJobReceiverRouter>(sp =>
                 new RemoteJobReceiverRouter(sp.GetRequiredService<ActorSystem>()));
@@ -196,6 +198,77 @@ public static class JobSchedulingHostingExtensions
             registry.Register<JobReceiverKey>(receiver);
         });
     }
+
+    /// <summary>
+    /// Registers everything a node needs to <i>use</i> the scheduler without hosting any of it:
+    /// proxies to the tracker singleton and the submitter shard region, plus the local feed
+    /// supervisor. This is what an API node wants.
+    /// </summary>
+    /// <remarks>
+    /// In <see cref="AkkaExecutionMode.LocalTest"/> there is nothing to proxy to, so this registers
+    /// the real thing — which is what makes an API integration test runnable in one process.
+    /// </remarks>
+    public static AkkaConfigurationBuilder WithJobSchedulingClient(
+        this AkkaConfigurationBuilder builder,
+        AkkaExecutionMode executionMode = AkkaExecutionMode.LocalTest)
+    {
+        if (executionMode == AkkaExecutionMode.LocalTest)
+        {
+            return builder
+                .WithJobSubmitters(executionMode)
+                .WithJobTracker(executionMode)
+                .WithJobStreams();
+        }
+
+        return builder
+            .WithSingletonProxy<JobTrackerKey>(
+                JobTrackerActor.Name,
+                new ClusterSingletonOptions { Role = WorkerRole })
+            .WithShardRegionProxy<JobSubmitterManagerKey>(
+                SubmitterRegionName,
+                WorkerRole,
+                new JobSubmitterMessageExtractor())
+            .WithJobStreams();
+    }
+
+    /// <summary>
+    /// Announces the local stand-in nodes to the membership source, so a self-contained local host
+    /// has capacity without anything having to drive topology by hand.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately separate from <see cref="WithJobReceivers"/>. Tests that exercise topology
+    /// transitions register their own <see cref="LocalClusterMembershipSource"/> and call
+    /// <c>MemberUp</c> themselves; auto-announcing there would hand them nodes they never asked
+    /// for. Everything else — a locally-run API, a demo — wants the nodes to just exist.
+    /// </remarks>
+    public static AkkaConfigurationBuilder WithAnnouncedLocalNodes(
+        this AkkaConfigurationBuilder builder,
+        IReadOnlyList<string> hosts,
+        uint nodeCapacity = DefaultNodeCapacity) =>
+        builder.WithActors((_, _, resolver) =>
+        {
+            if (resolver.GetService<IClusterMembershipSource>() is not LocalClusterMembershipSource local)
+                return;
+
+            foreach (var host in hosts)
+            {
+                local.MemberUp(host, nodeCapacity);
+            }
+        });
+
+    /// <summary>
+    /// Registers the node-local supervisor that owns live job feeds. No execution-mode overload:
+    /// feeds are always local to the node terminating the connection.
+    /// </summary>
+    public static AkkaConfigurationBuilder WithJobStreams(this AkkaConfigurationBuilder builder) =>
+        builder.WithActors((system, registry, resolver) =>
+        {
+            var supervisor = system.ActorOf(
+                resolver.Props<JobStreamSupervisor>(),
+                JobStreamSupervisor.Name);
+
+            registry.Register<JobStreamSupervisorKey>(supervisor);
+        });
 
     private static Props SubmitterProps(IActorRegistry registry, string entityId) =>
         JobSubmitterActor.Props(new JobSubmitterId(entityId), registry.Get<JobTrackerKey>());

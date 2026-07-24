@@ -17,19 +17,26 @@ public sealed class ClusterMembershipSource : IClusterMembershipSource
 {
     private readonly ActorSystem _system;
     private readonly JobSize _defaultCapacity;
+    private readonly string _workerRole;
     private readonly ConcurrentDictionary<IActorRef, IActorRef> _translators = new();
 
-    public ClusterMembershipSource(ActorSystem system, JobSize defaultCapacity)
+    /// <param name="workerRole">
+    /// Only members carrying this role are reported as capacity. Nodes that join for other reasons
+    /// — an API tier, say — host no receiver and must not be scheduled onto.
+    /// </param>
+    public ClusterMembershipSource(ActorSystem system, JobSize defaultCapacity, string workerRole)
     {
         _system = system;
         _defaultCapacity = defaultCapacity;
+        _workerRole = workerRole;
     }
 
     public void Subscribe(IActorRef subscriber)
     {
         _translators.GetOrAdd(
             subscriber,
-            target => _system.ActorOf(ClusterEventTranslator.Props(target, _defaultCapacity)));
+            target => _system.ActorOf(
+                ClusterEventTranslator.Props(target, _defaultCapacity, _workerRole)));
     }
 
     public void Unsubscribe(IActorRef subscriber)

@@ -26,3 +26,9 @@ public sealed class JobReceiverKey;
 /// a shard region when clustered.
 /// </summary>
 public sealed class JobSubmitterManagerKey;
+
+/// <summary>
+/// Registry key for this node's job feed supervisor. Always node-local; there is no clustered
+/// variant, because the feeds it owns terminate HTTP connections on this node.
+/// </summary>
+public sealed class JobStreamSupervisorKey;

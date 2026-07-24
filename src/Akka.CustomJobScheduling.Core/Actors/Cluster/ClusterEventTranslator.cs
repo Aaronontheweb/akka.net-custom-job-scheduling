@@ -15,17 +15,19 @@ namespace Akka.CustomJobScheduling.Core.Actors.Cluster;
 /// </remarks>
 internal sealed class ClusterEventTranslator : ReceiveActor
 {
-    public static Props Props(IActorRef target, JobSize defaultCapacity) =>
-        Actor.Props.Create(() => new ClusterEventTranslator(target, defaultCapacity));
+    public static Props Props(IActorRef target, JobSize defaultCapacity, string workerRole) =>
+        Actor.Props.Create(() => new ClusterEventTranslator(target, defaultCapacity, workerRole));
 
     private readonly ILoggingAdapter _log = Context.GetLogger();
     private readonly IActorRef _target;
     private readonly JobSize _defaultCapacity;
+    private readonly string _workerRole;
 
-    public ClusterEventTranslator(IActorRef target, JobSize defaultCapacity)
+    public ClusterEventTranslator(IActorRef target, JobSize defaultCapacity, string workerRole)
     {
         _target = target;
         _defaultCapacity = defaultCapacity;
+        _workerRole = workerRole;
 
         // CurrentClusterState arrives first and describes everyone already present, which is what
         // lets a tracker that starts late (or restarts) rebuild its node map without waiting for
@@ -40,9 +42,7 @@ internal sealed class ClusterEventTranslator : ReceiveActor
 
             foreach (var unreachable in state.Unreachable)
             {
-                _target.Tell(new JobTrackerCommands.NodeReachabilityChanged(
-                    unreachable.Address,
-                    Reachable: false));
+                Reachability(unreachable, reachable: false);
             }
         });
 
@@ -53,27 +53,50 @@ internal sealed class ClusterEventTranslator : ReceiveActor
         // why requeueing has to wait for the cluster to commit to the node being gone.
         Receive<ClusterEvent.MemberRemoved>(removed =>
         {
+            if (!RunsWork(removed.Member))
+                return;
+
             _log.Info("Node {NodeAddress} removed from cluster; its work will be requeued",
                 removed.Member.Address);
             _target.Tell(new JobTrackerCommands.NodeLeft(removed.Member.Address));
         });
 
         Receive<ClusterEvent.UnreachableMember>(unreachable =>
-            _target.Tell(new JobTrackerCommands.NodeReachabilityChanged(
-                unreachable.Member.Address,
-                Reachable: false)));
+            Reachability(unreachable.Member, reachable: false));
 
         Receive<ClusterEvent.ReachableMember>(reachable =>
-            _target.Tell(new JobTrackerCommands.NodeReachabilityChanged(
-                reachable.Member.Address,
-                Reachable: true)));
+            Reachability(reachable.Member, reachable: true));
     }
 
-    private void Join(Member member) =>
+    private void Join(Member member)
+    {
+        if (!RunsWork(member))
+            return;
+
         _target.Tell(new JobTrackerCommands.NodeJoined(
             member.Address,
             member.Status,
             _defaultCapacity));
+    }
+
+    private void Reachability(Member member, bool reachable)
+    {
+        if (!RunsWork(member))
+            return;
+
+        _target.Tell(new JobTrackerCommands.NodeReachabilityChanged(member.Address, reachable));
+    }
+
+    /// <summary>
+    /// Only nodes carrying the worker role can actually run jobs.
+    /// </summary>
+    /// <remarks>
+    /// Without this filter every cluster member counts as capacity — including API nodes, which
+    /// host no <see cref="JobReceiverActor"/>. The tracker would happily place work on one and the
+    /// job would sit in <see cref="JobStatus.Running"/> at zero progress forever, because nothing
+    /// there is listening for it.
+    /// </remarks>
+    private bool RunsWork(Member member) => member.HasRole(_workerRole);
 
     protected override void PreStart() =>
         Akka.Cluster.Cluster.Get(Context.System).Subscribe(

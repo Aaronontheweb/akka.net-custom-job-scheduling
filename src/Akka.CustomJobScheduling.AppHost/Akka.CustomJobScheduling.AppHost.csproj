@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Akka.CustomJobScheduling\Akka.CustomJobScheduling.csproj" />
+    <ProjectReference Include="..\Akka.CustomJobScheduling.Api\Akka.CustomJobScheduling.Api.csproj" />
   </ItemGroup>
 
 </Project>

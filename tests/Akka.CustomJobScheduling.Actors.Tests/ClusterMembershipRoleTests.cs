@@ -1,0 +1,100 @@
+using Akka.Cluster;
+using Akka.CustomJobScheduling.Core.Actors;
+using Akka.CustomJobScheduling.Core.Actors.Cluster;
+using Akka.CustomJobScheduling.Core.JobTracker;
+using Akka.CustomJobScheduling.Core.Jobs;
+using Akka.Hosting;
+using Akka.TestKit;
+using Xunit.Abstractions;
+
+namespace Akka.CustomJobScheduling.Actors.Tests;
+
+/*
+ * Regression tests for a real bug.
+ *
+ * The translator originally reported every cluster member as capacity. Once an API tier joined the
+ * same cluster under the "api" role - hosting no JobReceiverActor - the tracker counted it as 100
+ * units, placed a job there, and the job sat in Running at zero progress forever because nothing on
+ * that node was listening.
+ *
+ * These drive ClusterMembershipSource against a real single-node cluster and assert on what it
+ * publishes. They deliberately avoid the tracker: the singleton is pinned to the worker role, so on
+ * an api-only node there is nothing to ask.
+ */
+
+/// <summary>
+/// A node carrying the worker role is reported as capacity.
+/// </summary>
+[Trait("ExecutionMode", "Clustered")]
+public class WorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
+{
+    public WorkerRoleMembershipTests(ITestOutputHelper output) : base(output: output)
+    {
+    }
+
+    protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider) =>
+        builder.AddHocon(ClusterRoleHocon.For("worker"), HoconAddMode.Prepend);
+
+    [Fact]
+    public async Task Publishes_NodeJoined_for_a_worker()
+    {
+        var probe = CreateTestProbe();
+        new ClusterMembershipSource(Sys, new JobSize(100), "worker").Subscribe(probe);
+
+        await ClusterRoleHocon.JoinAsync(this);
+
+        var joined = await probe.ExpectMsgAsync<JobTrackerCommands.NodeJoined>(
+            TimeSpan.FromSeconds(10));
+
+        Assert.Equal(Akka.Cluster.Cluster.Get(Sys).SelfAddress, joined.NodeAddress);
+        Assert.Equal(new JobSize(100), joined.MaxCapacity);
+    }
+}
+
+/// <summary>
+/// A node that joins for some other reason is not.
+/// </summary>
+[Trait("ExecutionMode", "Clustered")]
+public class NonWorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
+{
+    public NonWorkerRoleMembershipTests(ITestOutputHelper output) : base(output: output)
+    {
+    }
+
+    protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider) =>
+        builder.AddHocon(ClusterRoleHocon.For("api"), HoconAddMode.Prepend);
+
+    [Fact]
+    public async Task Publishes_nothing_for_a_non_worker()
+    {
+        var probe = CreateTestProbe();
+        new ClusterMembershipSource(Sys, new JobSize(100), "worker").Subscribe(probe);
+
+        await ClusterRoleHocon.JoinAsync(this);
+
+        // The node is Up and the translator saw the MemberUp — it just isn't ours to schedule onto.
+        await probe.ExpectNoMsgAsync(TimeSpan.FromSeconds(2));
+    }
+}
+
+internal static class ClusterRoleHocon
+{
+    public static string For(string role) =>
+        $$"""
+          akka.actor.provider = cluster
+          akka.remote.dot-netty.tcp.hostname = "127.0.0.1"
+          akka.remote.dot-netty.tcp.port = 0
+          akka.cluster.seed-nodes = []
+          akka.cluster.roles = ["{{role}}"]
+          """;
+
+    public static async Task JoinAsync(Akka.Hosting.TestKit.TestKit kit)
+    {
+        var cluster = Akka.Cluster.Cluster.Get(kit.Sys);
+        cluster.Join(cluster.SelfAddress);
+
+        await kit.AwaitConditionAsync(
+            () => Task.FromResult(cluster.SelfMember.Status == MemberStatus.Up),
+            TimeSpan.FromSeconds(15));
+    }
+}

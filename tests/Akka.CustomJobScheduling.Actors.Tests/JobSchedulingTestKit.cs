@@ -53,10 +53,15 @@ public abstract class JobSchedulingTestKit : Akka.Hosting.TestKit.TestKit
         akka.remote.dot-netty.tcp.hostname = "127.0.0.1"
         akka.remote.dot-netty.tcp.port = 0
         akka.cluster.seed-nodes = []
-        akka.cluster.roles = ["worker"]
         akka.cluster.sharding.state-store-mode = ddata
         akka.cluster.sharding.remember-entities = off
         """;
+
+    /// <summary>
+    /// Cluster roles this node carries. Override to model a node that joins the cluster without
+    /// running work.
+    /// </summary>
+    protected virtual IReadOnlyList<string> ClusterRoles => [JobSchedulingHostingExtensions.WorkerRole];
 
     protected override void ConfigureServices(HostBuilderContext context, IServiceCollection services)
     {
@@ -73,7 +78,12 @@ public abstract class JobSchedulingTestKit : Akka.Hosting.TestKit.TestKit
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
         if (ExecutionMode == AkkaExecutionMode.Clustered)
-            builder.AddHocon(SingleNodeClusterHocon, HoconAddMode.Prepend);
+        {
+            var roles = string.Join(", ", ClusterRoles.Select(role => $"\"{role}\""));
+            builder.AddHocon(
+                $"{SingleNodeClusterHocon}\nakka.cluster.roles = [{roles}]",
+                HoconAddMode.Prepend);
+        }
 
         builder.WithJobSchedulingActors(ExecutionMode, Nodes);
     }

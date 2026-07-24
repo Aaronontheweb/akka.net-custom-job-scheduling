@@ -85,4 +85,9 @@ public sealed record JobProgress(
     JobId Id,
     JobStatus Status,
     WorkProgress Progress,
-    DateTimeOffset LastUpdatedAt) : IWithJobId;
+    DateTimeOffset LastUpdatedAt) : IWithJobId
+{
+    /// <summary>True once the job can no longer change state.</summary>
+    public bool IsTerminal =>
+        Status is JobStatus.Completed or JobStatus.Faulted or JobStatus.Cancelled;
+}

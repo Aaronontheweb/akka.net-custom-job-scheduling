@@ -14,12 +14,12 @@ namespace Akka.CustomJobScheduling.Actors.Tests;
 /// The rest of the suite runs in <see cref="AkkaExecutionMode.LocalTest"/>, which is fast but
 /// proves nothing about the clustered branch of each <c>With*</c> method. This class is the
 /// counterweight: one node, self-joined, with a real cluster singleton, a real shard region, and
-/// the real <see cref="Cluster.ClusterEventTranslator"/> turning
-/// <c>ClusterEvent.MemberUp</c> into <see cref="JobTrackerCommands.NodeJoined"/>.
+/// the real cluster event translator turning <c>ClusterEvent.MemberUp</c> into
+/// <see cref="JobTrackerCommands.NodeJoined"/>.
 /// </para>
 /// <para>
-/// It is deliberately thin — enough to catch a registration branch that doesn't compose, not a
-/// second copy of the behavioural suite.
+/// Deliberately thin — enough to catch a registration branch that doesn't compose, not a second
+/// copy of the behavioural suite.
 /// </para>
 /// </remarks>
 [Trait("ExecutionMode", "Clustered")]
@@ -36,7 +36,7 @@ public class ClusteredSchedulingTests : JobSchedulingTestKit
     {
         await JoinClusterAsync();
 
-        // Nothing told the tracker about this node — the ClusterEventTranslator did, off a real
+        // Nothing told the tracker about this node — the cluster event translator did, off a real
         // MemberUp, using the capacity supplied at registration.
         await AwaitAssertAsync(async () =>
         {
@@ -63,3 +63,4 @@ public class ClusteredSchedulingTests : JobSchedulingTestKit
         Assert.Equal(1m, status.Progress.Progress.Fraction);
     }
 }
+

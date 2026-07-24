@@ -84,9 +84,10 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
                 .WithConnectivityCheck(
                     tags: ["ready", "persistence", "redis", "snapshot-store", "connectivity"]));
 
-    akkaBuilder
-        .WithJobSchedulingActors(AkkaExecutionMode.Clustered)
-        .WithSyntheticJobTraffic();
+    akkaBuilder.WithJobSchedulingActors(AkkaExecutionMode.Clustered);
+
+    if (configuration.GetValue(JobLoadGenerator.EnabledKey, false))
+        akkaBuilder.WithSyntheticJobTraffic();
 });
 
 builder.Services.AddHealthChecks();
