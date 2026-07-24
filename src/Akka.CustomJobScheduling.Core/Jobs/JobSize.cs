@@ -1,13 +1,24 @@
-﻿namespace Akka.CustomerJobScheduling.Core.Jobs;
+﻿namespace Akka.CustomJobScheduling.Core.Jobs;
 
 /// <summary>
-/// Describes the total size of the job in terms of "units of execution"
-///
-/// i.e. how many rows in a table need to be ETL'd, how many lines
-/// in a spreadsheet need to be imported, etc
+/// Describes job demand and worker capacity.
 /// </summary>
 /// <param name="Size">Underlying value.</param>
-public readonly record struct JobSize(uint Size)
+public readonly record struct JobSize(uint Size) : IComparable<JobSize>
 {
-    public static readonly JobSize Unknown = new(0);
+    public static readonly JobSize Zero = new(0);
+
+    public int CompareTo(JobSize other) => Size.CompareTo(other.Size);
+
+    public static JobSize operator +(JobSize left, JobSize right) => new(left.Size + right.Size);
+
+    public static JobSize operator -(JobSize left, JobSize right) => new(left.Size - right.Size);
+
+    public static bool operator <(JobSize left, JobSize right) => left.Size < right.Size;
+
+    public static bool operator <=(JobSize left, JobSize right) => left.Size <= right.Size;
+
+    public static bool operator >(JobSize left, JobSize right) => left.Size > right.Size;
+
+    public static bool operator >=(JobSize left, JobSize right) => left.Size >= right.Size;
 }

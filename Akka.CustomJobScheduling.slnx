@@ -9,4 +9,5 @@
   <Project Path="src/Akka.CustomJobScheduling.AppHost/Akka.CustomJobScheduling.AppHost.csproj" />
   <Project Path="src/Akka.CustomJobScheduling.Core/Akka.CustomJobScheduling.Core.csproj" />
   <Project Path="src/Akka.CustomJobScheduling/Akka.CustomJobScheduling.csproj" />
+  <Project Path="tests/Akka.CustomJobScheduling.Core.Tests/Akka.CustomJobScheduling.Core.Tests.csproj" />
 </Solution>

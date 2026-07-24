@@ -1,4 +1,4 @@
-﻿namespace Akka.CustomerJobScheduling.Core.Jobs;
+﻿namespace Akka.CustomJobScheduling.Core.Jobs;
 
 /// <summary>
 /// Represents a unique job execution inside the platform.

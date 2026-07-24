@@ -1,6 +1,5 @@
 ﻿using Akka.Actor;
 using Akka.Cluster;
-using Akka.CustomerJobScheduling.Core.Jobs;
 
 namespace Akka.CustomJobScheduling.Core.Jobs;
 
@@ -16,17 +15,32 @@ public sealed record JobDefinition(JobId Id, JobSize Size) : IWithJobId;
 /// The amount of total capacity defined on each node.
 /// </summary>
 /// <param name="NodeAddress">The Akka.NET Address for this node.</param>
-/// <param name="MaxCapacity">Maximum cumulative job-sizes that can be run in parallel.</param>
+/// <param name="MaxCapacity">Maximum cumulative work units that can run in parallel.</param>
 public sealed record NodeCapacity(Address NodeAddress, JobSize MaxCapacity);
 
 /// <summary>
 /// Describes the allocation burden + Akka.Cluster status of a given worker node.
 /// </summary>
-public sealed record NodeStatus(Address NodeAddress, 
-    MemberStatus Status, bool Reachable,
-    DateTime LastUpdate, 
-    JobSize MaxCapacity,
-    JobSize InUse);
+public sealed record NodeStatus(
+    Address NodeAddress,
+    MemberStatus Status,
+    bool Reachable,
+    DateTimeOffset LastUpdatedAt,
+    JobSize MaximumCapacity,
+    JobSize CapacityInUse)
+{
+    public JobSize AvailableCapacity =>
+        CapacityInUse >= MaximumCapacity ? JobSize.Zero : MaximumCapacity - CapacityInUse;
+
+    public bool HasCapacityFor(JobDefinition job) => AvailableCapacity >= job.Size;
+
+    public bool CanAccept(JobDefinition job)
+    {
+        return Status is MemberStatus.Up or MemberStatus.WeaklyUp
+               && Reachable
+               && HasCapacityFor(job);
+    }
+}
 
 /// <summary>
 /// What is the execution status of a given job?
@@ -40,6 +54,10 @@ public enum JobStatus
 }
 
 /// <summary>
-/// The status of a job's progression.
+/// The execution status and observed progress of a job.
 /// </summary>
-public sealed record JobProgress(JobId Id, JobStatus Status, JobSize MaxCapacity, JobSize Completed, DateTime LastUpdate) : IWithJobId;
+public sealed record JobProgress(
+    JobId Id,
+    JobStatus Status,
+    WorkProgress Progress,
+    DateTimeOffset LastUpdatedAt) : IWithJobId;
