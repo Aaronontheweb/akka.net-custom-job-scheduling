@@ -245,6 +245,46 @@ public class JobTrackerStateTests
     // ------------------------------------------------------------------
 
     [Fact]
+    public void Worker_reports_are_recorded_without_an_acknowledgement()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
+
+        // The executor stops itself the moment it reports completion, and the tracker only replies
+        // after its journal write returns — so an ack would arrive at a dead actor and show up as a
+        // dead letter for every finished job. These commands record their effects and stay quiet.
+        var progress = tracker.Send(new ReportProgress(
+            new JobId("job-1"),
+            Node("node-a"),
+            new WorkProgress(new JobSize(10), new JobSize(40))));
+
+        var completed = tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-a")));
+
+        Assert.Null(progress.Response);
+        Assert.Null(completed.Response);
+
+        // Silent, but not inert — the events still land.
+        Assert.NotEmpty(progress.Events);
+        Assert.Equal(JobStatus.Completed, tracker.Job("job-1").Status);
+    }
+
+    [Fact]
+    public void A_rejected_worker_report_still_answers()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
+
+        // Rejections are rare and mean something is wrong — an executor reporting on a job it no
+        // longer owns — so unlike the success path they are worth saying out loud.
+        var decision = tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-b")));
+
+        var rejected = Assert.IsType<CommandRejected>(decision.Response);
+        Assert.Equal(JobRejectionReason.StaleReport, rejected.Reason);
+    }
+
+    [Fact]
     public void Progress_reports_from_a_node_that_does_not_own_the_job_are_rejected()
     {
         var tracker = new Tracker();

@@ -32,7 +32,15 @@ public sealed record JobTrackerDecision(
             ImmutableArray<IJobTrackerEvent>.Empty,
             new JobTrackerResponses.CommandRejected(id, reason, message));
 
-    /// <summary>Effects with no acknowledgement — used for cluster topology changes.</summary>
+    /// <summary>
+    /// Effects with no acknowledgement — cluster topology changes, and reports from workers.
+    /// </summary>
+    /// <remarks>
+    /// Worker reports use this because the executor that sent one is usually gone by the time a
+    /// reply could reach it: <c>JobExecutorActor</c> stops itself the instant it reports completion,
+    /// and the tracker only answers after its journal write returns. Acknowledging would produce a
+    /// dead letter per finished job for a message nothing reads.
+    /// </remarks>
     public static JobTrackerDecision Record(params IJobTrackerEvent[] events) =>
         new([.. events], null);
 
@@ -193,8 +201,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (rejection is not null)
             return rejection;
 
-        return JobTrackerDecision.Accept(
-            command.Id,
+        return JobTrackerDecision.Record(
             new JobTrackerEvents.JobProgressed(command.Id, command.Progress, now));
     }
 
@@ -206,8 +213,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (rejection is not null)
             return rejection;
 
-        return JobTrackerDecision.Accept(
-            command.Id,
+        return JobTrackerDecision.Record(
             new JobTrackerEvents.JobCompleted(command.Id, now));
     }
 
@@ -219,14 +225,18 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (rejection is not null)
             return rejection;
 
-        return JobTrackerDecision.Accept(
-            command.Id,
+        return JobTrackerDecision.Record(
             new JobTrackerEvents.JobFailed(command.Id, command.Reason, now));
     }
 
     /// <summary>
     /// Shared guard for worker reports: returns the rejection, or <c>null</c> if the report is good.
     /// </summary>
+    /// <remarks>
+    /// A rejection here is worth surfacing — it means an executor is reporting on a job it no longer
+    /// owns — and it is rare. A successful report is neither, which is why the handlers above answer
+    /// with <see cref="JobTrackerDecision.Record"/> rather than an acknowledgement nobody reads.
+    /// </remarks>
     private JobTrackerDecision? ValidateReport(JobId id, Address from)
     {
         if (!Jobs.TryGetValue(id, out var job))
