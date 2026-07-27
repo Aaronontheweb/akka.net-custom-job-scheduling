@@ -33,6 +33,7 @@ public static class JobTrackerCommands
     public sealed record SubmitJob(JobDefinition Job, JobSubmitterId SubmitterId)
         : IJobTrackerCommand, IWithJobId, IWithJobSubmitterId
     {
+        [System.Text.Json.Serialization.JsonIgnore]
         public JobId Id => Job.Id;
     }
 

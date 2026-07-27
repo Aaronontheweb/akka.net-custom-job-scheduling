@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Akka.CustomJobScheduling.Core.Jobs;
 
 /// <summary>
@@ -5,6 +7,7 @@ namespace Akka.CustomJobScheduling.Core.Jobs;
 /// </summary>
 public readonly record struct WorkProgress(JobSize Completed, JobSize Total)
 {
+    [JsonIgnore]
     public decimal Fraction
     {
         get
