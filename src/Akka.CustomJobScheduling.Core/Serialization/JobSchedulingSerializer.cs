@@ -82,6 +82,9 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
         JobTrackerQueries.SubscribeToJob => SubscribeToJob,
         JobTrackerQueries.UnsubscribeFromJob => UnsubscribeFromJob,
         JobTrackerQueries.GetQueueStatus => GetQueueStatus,
+        JobTrackerQueries.GetJobs => GetJobs,
+        JobTrackerQueries.SubscribeToQueue => SubscribeToQueue,
+        JobTrackerQueries.UnsubscribeFromQueue => UnsubscribeFromQueue,
 
         // query responses
         JobTrackerQueryResponses.JobStatusResult => JobStatusResult,
@@ -89,6 +92,7 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
         JobTrackerQueryResponses.SubscribeAck => SubscribeAck,
         JobTrackerQueryResponses.UnsubscribeAck => UnsubscribeAck,
         JobTrackerQueryResponses.QueueStatus => QueueStatus,
+        JobTrackerQueryResponses.JobList => JobList,
 
         // notifications
         JobTrackerNotifications.JobStatusChanged => JobStatusChanged,
@@ -306,6 +310,22 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 w.WriteArrayHeader(0);
                 break;
 
+            case JobTrackerQueries.GetJobs q:
+                w.WriteArrayHeader(2);
+                w.Write(q.IncludeFinished);
+                w.Write(q.Limit);
+                break;
+
+            case JobTrackerQueries.SubscribeToQueue q:
+                w.WriteArrayHeader(1);
+                Write(ref w, q.Subscriber);
+                break;
+
+            case JobTrackerQueries.UnsubscribeFromQueue q:
+                w.WriteArrayHeader(1);
+                Write(ref w, q.Subscriber);
+                break;
+
             // ---- query responses ----
             case JobTrackerQueryResponses.JobStatusResult q:
                 w.WriteArrayHeader(4);
@@ -318,6 +338,17 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
             case JobTrackerQueryResponses.JobNotFound q:
                 w.WriteArrayHeader(1);
                 Write(ref w, q.Id);
+                break;
+
+            case JobTrackerQueryResponses.JobList q:
+                w.WriteArrayHeader(2);
+                w.Write(q.Total);
+                w.WriteArrayHeader(q.Jobs.Length);
+                foreach (var job in q.Jobs)
+                {
+                    WriteBody(ref w, job);
+                }
+
                 break;
 
             case JobTrackerQueryResponses.SubscribeAck q:
@@ -629,6 +660,42 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
             case GetQueueStatus:
                 Skip(ref r, fields, 0);
                 return JobTrackerQueries.GetQueueStatus.Instance;
+
+            case GetJobs:
+            {
+                var includeFinished = r.ReadBoolean();
+                var limit = r.ReadInt32();
+                Skip(ref r, fields, 2);
+                return new JobTrackerQueries.GetJobs(includeFinished, limit);
+            }
+
+            case SubscribeToQueue:
+            {
+                var subscriber = ReadActorRef(ref r, _system);
+                Skip(ref r, fields, 1);
+                return new JobTrackerQueries.SubscribeToQueue(subscriber);
+            }
+
+            case UnsubscribeFromQueue:
+            {
+                var subscriber = ReadActorRef(ref r, _system);
+                Skip(ref r, fields, 1);
+                return new JobTrackerQueries.UnsubscribeFromQueue(subscriber);
+            }
+
+            case JobList:
+            {
+                var total = r.ReadInt32();
+                var count = r.ReadArrayHeader();
+                var jobs = ImmutableArray.CreateBuilder<JobTrackerQueryResponses.JobStatusResult>(count);
+                for (var i = 0; i < count; i++)
+                {
+                    jobs.Add((JobTrackerQueryResponses.JobStatusResult)ReadBody(ref r, JobStatusResult));
+                }
+
+                Skip(ref r, fields, 2);
+                return new JobTrackerQueryResponses.JobList(jobs.ToImmutable(), total);
+            }
 
             case JobStatusResult:
             {

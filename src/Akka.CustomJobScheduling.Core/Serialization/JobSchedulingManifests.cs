@@ -54,6 +54,9 @@ public static class JobSchedulingManifests
     public const string SubscribeToJob = "q:subscribe";
     public const string UnsubscribeFromJob = "q:unsubscribe";
     public const string GetQueueStatus = "q:get-queue-status";
+    public const string GetJobs = "q:get-jobs";
+    public const string SubscribeToQueue = "q:subscribe-queue";
+    public const string UnsubscribeFromQueue = "q:unsubscribe-queue";
 
     // Query responses.
     public const string JobStatusResult = "qr:job-status";
@@ -61,6 +64,7 @@ public static class JobSchedulingManifests
     public const string SubscribeAck = "qr:subscribe-ack";
     public const string UnsubscribeAck = "qr:unsubscribe-ack";
     public const string QueueStatus = "qr:queue-status";
+    public const string JobList = "qr:job-list";
 
     // Notifications.
     public const string JobStatusChanged = "n:job-status-changed";

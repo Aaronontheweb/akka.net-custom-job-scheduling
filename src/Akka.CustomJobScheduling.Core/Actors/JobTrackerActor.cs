@@ -54,6 +54,9 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
     private readonly Dictionary<JobId, HashSet<IActorRef>> _subscribers = [];
 
+    /// <summary>Watchers of the whole queue rather than one job — dashboards, essentially.</summary>
+    private readonly HashSet<IActorRef> _queueSubscribers = [];
+
     private JobTrackerState _state = JobTrackerState.Empty;
 
     public ITimerScheduler Timers { get; set; } = null!;
@@ -72,8 +75,12 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         Command<IJobTrackerCommand>(HandleCommand);
         Command<JobTrackerQueries.GetJobStatus>(query => Sender.Tell(_state.GetJobStatus(query.Id)));
         Command<JobTrackerQueries.GetQueueStatus>(_ => Sender.Tell(_state.GetQueueStatus()));
+        Command<JobTrackerQueries.GetJobs>(query =>
+            Sender.Tell(_state.GetJobs(query.IncludeFinished, query.Limit)));
         Command<JobTrackerQueries.SubscribeToJob>(HandleSubscribe);
         Command<JobTrackerQueries.UnsubscribeFromJob>(HandleUnsubscribe);
+        Command<JobTrackerQueries.SubscribeToQueue>(HandleSubscribeToQueue);
+        Command<JobTrackerQueries.UnsubscribeFromQueue>(HandleUnsubscribeFromQueue);
         Command<Terminated>(terminated => DropSubscriber(terminated.ActorRef));
         Command<SaveSnapshotSuccess>(success =>
             DeleteSnapshots(new SnapshotSelectionCriteria(success.Metadata.SequenceNr - 1)));
@@ -179,6 +186,11 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
         if (@event is IWithJobId withJobId)
             NotifyAbout(withJobId.Id);
+
+        // Capacity moves on job transitions as well as topology changes, so refresh watchers after
+        // every event rather than trying to guess which ones matter.
+        if (_queueSubscribers.Count > 0)
+            NotifyQueueWatchers(_state.GetQueueStatus());
     }
 
     private void Dispatch(JobTrackerEvents.JobScheduled scheduled)
@@ -207,12 +219,28 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         }
     }
 
+    /// <summary>
+    /// Pushes fresh cluster capacity to queue watchers. Job transitions move capacity too, so this
+    /// runs for those as well as for topology changes.
+    /// </summary>
+    private void NotifyQueueWatchers(object update)
+    {
+        foreach (var watcher in _queueSubscribers)
+        {
+            watcher.Tell(update);
+        }
+    }
+
     private void NotifyAbout(JobId id)
     {
         if (!_state.Jobs.TryGetValue(id, out var job))
             return;
 
         var notification = job.ToNotification();
+
+        // Queue watchers see every job, including ones they've never heard of — that's the whole
+        // point, since a dashboard has no ids in hand when it connects.
+        NotifyQueueWatchers(notification);
 
         // Back to the submitter, routed by JobSubmitterId through the shard region so it survives
         // the submitter having been moved or restarted since it asked. Resolved lazily rather than
@@ -263,8 +291,24 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         Sender.Tell(new JobTrackerQueryResponses.UnsubscribeAck(query.Id, query.Subscriber));
     }
 
+    private void HandleSubscribeToQueue(JobTrackerQueries.SubscribeToQueue query)
+    {
+        if (_queueSubscribers.Add(query.Subscriber))
+            Context.Watch(query.Subscriber);
+
+        // Opening snapshot, so a dashboard renders immediately instead of staying blank until the
+        // next thing happens to change.
+        query.Subscriber.Tell(_state.GetJobs());
+        query.Subscriber.Tell(_state.GetQueueStatus());
+    }
+
+    private void HandleUnsubscribeFromQueue(JobTrackerQueries.UnsubscribeFromQueue query) =>
+        _queueSubscribers.Remove(query.Subscriber);
+
     private void DropSubscriber(IActorRef subscriber)
     {
+        _queueSubscribers.Remove(subscriber);
+
         foreach (var id in _subscribers.Keys.ToList())
         {
             var listeners = _subscribers[id];

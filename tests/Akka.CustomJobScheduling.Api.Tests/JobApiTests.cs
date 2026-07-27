@@ -22,13 +22,82 @@ public class JobApiTests : IClassFixture<JobApiFactory>
         JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
 
     [Fact]
-    public async Task Root_responds()
+    public async Task Root_serves_the_dashboard()
     {
-        // Sounds trivial, and is the single most valuable test here: a minimal-API route that
-        // fails to build takes down every endpoint in the app, including this one.
+        // Doubles as the canary: a minimal-API route that fails to build takes down every endpoint
+        // in the app, so a 500 here means something far away is broken.
         var response = await Client().GetAsync("/");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("/cluster/events", html);
+    }
+
+    [Fact]
+    public async Task Job_list_reports_submitted_jobs()
+    {
+        var client = Client();
+        await client.PostAsJsonAsync("/jobs", new { id = "listed-1", size = 5, submitterId = "tester" });
+        await client.PostAsJsonAsync("/jobs", new { id = "listed-2", size = 5, submitterId = "tester" });
+
+        var list = await JsonOf(await client.GetAsync("/jobs"));
+
+        var ids = list.GetProperty("jobs").EnumerateArray()
+            .Select(j => j.GetProperty("id").GetString())
+            .ToList();
+
+        Assert.Contains("listed-1", ids);
+        Assert.Contains("listed-2", ids);
+        Assert.True(list.GetProperty("total").GetInt32() >= 2);
+    }
+
+    [Fact]
+    public async Task Job_list_can_exclude_finished_work()
+    {
+        var client = Client();
+        await client.PostAsJsonAsync("/jobs", new { id = "filtered", size = 5, submitterId = "tester" });
+        await client.DeleteAsync("/jobs/filtered?submitterId=tester");
+
+        var active = await JsonOf(await client.GetAsync("/jobs?includeFinished=false"));
+
+        Assert.DoesNotContain(
+            "filtered",
+            active.GetProperty("jobs").EnumerateArray().Select(j => j.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public async Task Queue_stream_opens_with_a_snapshot_then_pushes_transitions()
+    {
+        var client = Client();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/cluster/events");
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType?.MediaType);
+
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+        // Submitting after the stream is open proves this is a push, not a snapshot poll: the
+        // "status" frame can only arrive because the tracker sent it.
+        await client.PostAsJsonAsync("/jobs", new { id = "streamed", size = 3, submitterId = "tester" });
+
+        var seen = new List<string>();
+
+        while (await reader.ReadLineAsync(deadline.Token) is { } line)
+        {
+            if (line.StartsWith("event: "))
+                seen.Add(line[7..]);
+
+            // Opening snapshot is jobs+queue; a transition for the job we just submitted proves
+            // the live half works.
+            if (seen.Contains("jobs") && seen.Contains("queue") && seen.Contains("status"))
+                return;
+        }
+
+        Assert.Fail($"stream ended before all frame types arrived; saw: {string.Join(", ", seen)}");
     }
 
     [Fact]

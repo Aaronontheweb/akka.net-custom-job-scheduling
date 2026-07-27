@@ -34,6 +34,28 @@ public static class JobTrackerQueries
     {
         public static readonly GetQueueStatus Instance = new();
     }
+
+    /// <summary>
+    /// Fetch every job the tracker knows about, newest activity first.
+    /// </summary>
+    /// <param name="IncludeFinished">
+    /// When false, only jobs that are still waiting or running come back.
+    /// </param>
+    /// <param name="Limit">Caps the result so a long-lived tracker can't return an unbounded page.</param>
+    public sealed record GetJobs(bool IncludeFinished = true, int Limit = 200) : IJobTrackerQuery;
+
+    /// <summary>
+    /// Subscribe to <i>everything</i>: an opening snapshot, then every subsequent job transition
+    /// and every change in cluster capacity.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="SubscribeToJob"/>, which follows one job. This is what a dashboard
+    /// wants — it has no id in hand and needs to learn about jobs it has never seen.
+    /// </remarks>
+    public sealed record SubscribeToQueue(IActorRef Subscriber) : IJobTrackerQuery;
+
+    /// <summary>Stop sending queue-wide updates.</summary>
+    public sealed record UnsubscribeFromQueue(IActorRef Subscriber) : IJobTrackerQuery;
 }
 
 /// <summary>
@@ -48,6 +70,12 @@ public static class JobTrackerQueryResponses
         Address? AssignedNode) : IJobTrackerQueryResponse, IWithJobId, IWithJobSubmitterId;
 
     public sealed record JobNotFound(JobId Id) : IJobTrackerQueryResponse, IWithJobId;
+
+    /// <summary>Answer to <see cref="JobTrackerQueries.GetJobs"/>.</summary>
+    /// <param name="Jobs">Matching jobs, most recently updated first.</param>
+    /// <param name="Total">How many matched before <c>Limit</c> was applied.</param>
+    public sealed record JobList(ImmutableArray<JobStatusResult> Jobs, int Total)
+        : IJobTrackerQueryResponse;
 
     public sealed record SubscribeAck(JobId Id, IActorRef Subscriber)
         : IJobTrackerQueryResponse, IWithJobId;

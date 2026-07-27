@@ -602,6 +602,25 @@ public sealed record JobTrackerState : IJobTrackerDomain
         return job.ToStatusResult();
     }
 
+    /// <summary>Answers <see cref="JobTrackerQueries.GetJobs"/>.</summary>
+    /// <remarks>
+    /// Ordered by most recent activity so a dashboard shows what's moving, and capped so a
+    /// long-running tracker with a large history can't return an unbounded page.
+    /// </remarks>
+    public JobTrackerQueryResponses.JobList GetJobs(bool includeFinished = true, int limit = 200)
+    {
+        var matching = Jobs.Values.Where(job => includeFinished || !job.IsTerminal).ToList();
+
+        var page = matching
+            .OrderByDescending(job => job.LastUpdatedAt)
+            .ThenBy(job => job.Id.Value, StringComparer.Ordinal)
+            .Take(Math.Max(0, limit))
+            .Select(job => job.ToStatusResult())
+            .ToImmutableArray();
+
+        return new JobTrackerQueryResponses.JobList(page, matching.Count);
+    }
+
     /// <summary>Answers <see cref="JobTrackerQueries.GetQueueStatus"/>.</summary>
     public JobTrackerQueryResponses.QueueStatus GetQueueStatus() => new(
         WaitingCount: PendingJobs.Count,

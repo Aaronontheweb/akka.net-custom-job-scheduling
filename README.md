@@ -39,15 +39,21 @@ JobExecutorActor   one per running job; stops when done
 JobSubmitterActor  shard entity per submitter; receives progress
 ```
 
+## Dashboard
+
+The API serves a dashboard at `/` — cluster capacity, per-node utilisation bars, a live job table, and a submit box. It's a single static file with no build step and no framework, driven entirely by the `/cluster/events` stream: one snapshot on connect, then a frame per transition. Nothing polls.
+
 ## API
 
 | | | |
 | --- | --- | --- |
 | `POST` | `/jobs` | `{"id":"...","size":25,"submitterId":"..."}` → `202` + `Location` |
+| `GET` | `/jobs` | All jobs; `?includeFinished=false&limit=50` |
 | `GET` | `/jobs/{id}` | Current status |
-| `GET` | `/jobs/{id}/events` | Server-sent events until the job finishes |
+| `GET` | `/jobs/{id}/events` | Server-sent events until that job finishes |
 | `DELETE` | `/jobs/{id}?submitterId=...&reason=...` | Cancel |
 | `GET` | `/cluster/queue` | Queue depth and per-node capacity |
+| `GET` | `/cluster/events` | Server-sent events for the whole queue |
 
 Rejections map onto status codes directly: duplicate id `409`, unknown job `404`, already finished `409`, wrong submitter `403`, larger than any node `422`.
 

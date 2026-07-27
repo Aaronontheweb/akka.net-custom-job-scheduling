@@ -30,12 +30,134 @@ public static class JobEndpoints
     public static IEndpointRouteBuilder MapJobEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/jobs", SubmitJob);
+        app.MapGet("/jobs", ListJobs);
         app.MapGet("/jobs/{id}", GetJob);
         app.MapDelete("/jobs/{id}", CancelJob);
         app.MapGet("/jobs/{id}/events", StreamJob);
         app.MapGet("/cluster/queue", GetQueue);
+        app.MapGet("/cluster/events", StreamQueue);
 
         return app;
+    }
+
+    private static async Task<IResult> ListJobs(
+        bool? includeFinished,
+        int? limit,
+        IRequiredActor<JobTrackerKey> tracker,
+        CancellationToken ct)
+    {
+        var list = await tracker.ActorRef.Ask<JobTrackerQueryResponses.JobList>(
+            new JobTrackerQueries.GetJobs(includeFinished ?? true, limit ?? 200),
+            AskTimeout,
+            ct);
+
+        return Results.Ok(JobListResponse.From(list));
+    }
+
+    /// <summary>
+    /// Server-sent events for the whole queue: an opening snapshot, then every job transition and
+    /// capacity change. Unlike a job feed this has no terminal state — it runs until the client
+    /// disconnects.
+    /// </summary>
+    private static async Task<IResult> StreamQueue(
+        HttpContext context,
+        IRequiredActor<JobStreamSupervisorKey> streams,
+        CancellationToken ct)
+    {
+        var opened = await streams.ActorRef.Ask<object>(
+            new JobStreamMessages.OpenQueueStream(),
+            AskTimeout,
+            ct);
+
+        if (opened is JobStreamMessages.JobStreamRefused refused)
+            return Results.Json(
+                new { error = refused.Reason },
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+
+        var stream = (JobStreamMessages.QueueStreamOpened)opened;
+
+        await using (stream)
+        {
+            WriteEventStreamHeaders(context);
+            await context.Response.Body.FlushAsync(ct);
+            await PumpQueueAsync(context, stream, ct);
+        }
+
+        return Results.Empty;
+    }
+
+    private static async Task PumpQueueAsync(
+        HttpContext context,
+        JobStreamMessages.QueueStreamOpened stream,
+        CancellationToken ct)
+    {
+        try
+        {
+            while (true)
+            {
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(HeartbeatInterval);
+
+                bool more;
+                try
+                {
+                    more = await stream.Updates.WaitToReadAsync(idle.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    await context.Response.WriteAsync(": keep-alive\n\n", ct);
+                    await context.Response.Body.FlushAsync(ct);
+                    continue;
+                }
+
+                if (!more)
+                    return;
+
+                while (stream.Updates.TryRead(out var update))
+                {
+                    var frame = ToFrame(update);
+                    if (frame is null)
+                        continue;
+
+                    await context.Response.WriteAsync(
+                        $"event: {frame.Value.Name}\ndata: {frame.Value.Payload}\n\n", ct);
+                }
+
+                await context.Response.Body.FlushAsync(ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Client hung up.
+        }
+    }
+
+    /// <summary>
+    /// Names the SSE event by payload type so the browser can route it without sniffing shape.
+    /// </summary>
+    private static (string Name, string Payload)? ToFrame(object update) => update switch
+    {
+        JobTrackerQueryResponses.JobList list =>
+            ("jobs", JsonSerializer.Serialize(JobListResponse.From(list), Json)),
+
+        JobTrackerQueryResponses.QueueStatus status =>
+            ("queue", JsonSerializer.Serialize(QueueStatusResponse.From(status), Json)),
+
+        JobTrackerNotifications.JobStatusChanged status =>
+            ("status", JsonSerializer.Serialize(JobStatusResponse.From(status), Json)),
+
+        _ => null
+    };
+
+    private static void WriteEventStreamHeaders(HttpContext context)
+    {
+        context.Response.Headers.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+        context.Response.Headers.Connection = "keep-alive";
+
+        // Reverse proxies buffer response bodies by default, which would hold every event until
+        // the stream ends and defeat the point.
+        context.Response.Headers["X-Accel-Buffering"] = "no";
     }
 
     private static async Task<IResult> SubmitJob(
@@ -167,14 +289,7 @@ public static class JobEndpoints
         // tracker subscription. Runs on client disconnect, on error, and on normal completion.
         await using (stream)
         {
-            context.Response.Headers.ContentType = "text/event-stream";
-            context.Response.Headers.CacheControl = "no-cache";
-            context.Response.Headers.Connection = "keep-alive";
-
-            // Reverse proxies buffer response bodies by default, which would hold every event until
-            // the stream ends and defeat the point.
-            context.Response.Headers["X-Accel-Buffering"] = "no";
-
+            WriteEventStreamHeaders(context);
             await context.Response.Body.FlushAsync(ct);
             await PumpAsync(context, stream, ct);
         }

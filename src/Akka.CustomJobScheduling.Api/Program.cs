@@ -95,7 +95,11 @@ app.MapHealthChecks("/healthz/ready", new HealthCheckOptions
     Predicate = check => check.Tags.Contains("ready")
 });
 
-app.MapGet("/", () => Results.Ok(new { Service = "Akka.CustomJobScheduling.Api" }));
+// Serves wwwroot/index.html, the dashboard.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
+app.MapGet("/api", () => Results.Ok(new { Service = "Akka.CustomJobScheduling.Api" }));
 app.MapJobEndpoints();
 
 app.Run();

@@ -20,6 +20,12 @@ public static class JobStreamMessages
     public sealed record OpenJobStream(JobId Id) : IWithJobId;
 
     /// <summary>
+    /// Request a live feed of the whole queue: an opening snapshot, then every job transition and
+    /// capacity change.
+    /// </summary>
+    public sealed record OpenQueueStream;
+
+    /// <summary>
     /// A feed. Read <see cref="Updates"/> until it completes, then dispose to release the actor.
     /// </summary>
     /// <param name="Stream">The backing actor; disposing tells it to stop.</param>
@@ -30,6 +36,25 @@ public static class JobStreamMessages
     public sealed record JobStreamOpened(
         IActorRef Stream,
         ChannelReader<JobTrackerNotifications.JobStatusChanged> Updates) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            Stream.Tell(PoisonPill.Instance);
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// A whole-queue feed. Carries a mix of <see cref="JobTrackerQueryResponses.JobList"/>,
+    /// <see cref="JobTrackerQueryResponses.QueueStatus"/> and
+    /// <see cref="JobTrackerNotifications.JobStatusChanged"/>, so the reader pattern-matches.
+    /// </summary>
+    /// <remarks>
+    /// Unlike a job feed this never completes on its own — there is no terminal state for "the
+    /// queue". It ends when the reader disposes.
+    /// </remarks>
+    public sealed record QueueStreamOpened(IActorRef Stream, ChannelReader<object> Updates)
+        : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {

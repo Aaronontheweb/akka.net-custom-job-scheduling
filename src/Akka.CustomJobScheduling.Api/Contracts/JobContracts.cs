@@ -68,6 +68,13 @@ public sealed record NodeResponse(
         node.AvailableCapacity.Size);
 }
 
+/// <summary>A page of jobs.</summary>
+public sealed record JobListResponse(IReadOnlyList<JobStatusResponse> Jobs, int Total)
+{
+    public static JobListResponse From(JobTrackerQueryResponses.JobList list) =>
+        new([.. list.Jobs.Select(JobStatusResponse.From)], list.Total);
+}
+
 /// <summary>Queue depth and cluster capacity.</summary>
 public sealed record QueueStatusResponse(
     int Waiting,
