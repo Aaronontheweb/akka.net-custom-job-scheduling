@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Scheduler</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e9ef;
+    --dim: #8b93a4; --accent: #4f9cf9; --ok: #3fb950; --warn: #d29922;
+    --bad: #f85149; --idle: #6e7681;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7f9; --panel: #fff; --line: #e2e5ea; --text: #1c2029;
+      --dim: #616b7c; --idle: #98a1b0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  #conn { font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--idle); }
+  #dot.live { background: var(--ok); }
+  main { padding: 20px; display: grid; gap: 20px; max-width: 1100px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  section > h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim);
+    margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); font-weight: 600;
+  }
+  .pad { padding: 16px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; }
+  .stat .n { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  .node { display: grid; gap: 6px; margin-bottom: 14px; }
+  .node:last-child { margin-bottom: 0; }
+  .node .row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+  .node code { color: var(--dim); font-size: 12px; }
+  .bar { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--dim); font-weight: 600; padding: 8px 16px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 8px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  .pill {
+    display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px;
+    font-weight: 600; border: 1px solid currentColor;
+  }
+  .Running { color: var(--accent); } .Waiting { color: var(--warn); }
+  .Queued { color: #a371f7; }
+  .Completed { color: var(--ok); } .Faulted { color: var(--bad); }
+  .Cancelled { color: var(--idle); }
+  .mini { width: 90px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .mini > i { display: block; height: 100%; background: currentColor; transition: width .3s; }
+  .num { font-variant-numeric: tabular-nums; }
+  form { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--dim); font-weight: 600;
+  }
+  .hint { text-transform: none; letter-spacing: 0; font-weight: 400; opacity: .7; }
+  #err { color: var(--bad); font-size: 12px; align-self: center; }
+  input, button {
+    font: inherit; padding: 6px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  input { width: 110px; }
+  button { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+  button:hover { filter: brightness(1.1); }
+  .empty { color: var(--dim); padding: 24px 16px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Job Scheduler</h1>
+  <span id="conn"><span id="dot"></span><span id="connText">connecting…</span></span>
+</header>
+
+<main>
+  <section>
+    <h2>Cluster</h2>
+    <div class="pad">
+      <div class="stats" id="stats"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Nodes</h2>
+    <div class="pad" id="nodes"><div class="empty">no worker nodes</div></div>
+  </section>
+
+  <section>
+    <h2>Submit</h2>
+    <div class="pad">
+      <form id="submit">
+        <label>Job name <span class="hint">optional</span>
+          <input id="name" type="text" placeholder="auto-generated"></label>
+        <label>Size <span class="hint">work units</span>
+          <input id="size" type="number" min="1" max="100" value="20"></label>
+        <label>Submitter
+          <input id="submitter" type="text" value="dashboard"></label>
+        <button type="submit">Submit job</button>
+        <span id="err"></span>
+      </form>
+    </div>
+  </section>
+
+  <section>
+    <h2>Jobs</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>Job</th><th>Submitter</th><th>Status</th><th>Progress</th><th>Duration</th><th>Node</th>
+        </tr></thead>
+        <tbody id="jobs"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="noJobs">no jobs yet</div>
+  </section>
+</main>
+
+<script>
+// Jobs are keyed by id and merged in place: the stream sends a full list on connect, then one
+// frame per transition. Nothing here polls.
+const jobs = new Map();
+const el = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const shortNode = a => a ? esc(String(a).split('@').pop()) : '<span style="color:var(--dim)">—</span>';
+
+function renderQueue(q) {
+  el('stats').innerHTML = [
+    ['Running', q.running], ['Queued', q.queued], ['Waiting', q.waiting],
+    ['Capacity free', `${q.availableCapacity}/${q.totalCapacity}`]
+  ].map(([l, n]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${l}</div></div>`).join('');
+
+  el('nodes').innerHTML = q.nodes.length ? q.nodes.map(n => {
+    const pct = n.maxCapacity ? (n.inUse / n.maxCapacity) * 100 : 0;
+    const state = n.reachable ? n.status : `${n.status} · unreachable`;
+    // Per-node queue depth, derived from the jobs we already hold client-side.
+    const queued = [...jobs.values()].filter(j => j.status === 'Queued' && j.assignedNode === n.address).length;
+    const queuedTag = queued ? ` <span style="color:#a371f7">+${queued} queued</span>` : '';
+    return `<div class="node">
+      <div class="row"><code>${shortNode(n.address)}</code>
+        <span class="num">${n.inUse}/${n.maxCapacity}${queuedTag} <span style="color:var(--dim)">${esc(state)}</span></span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div>
+    </div>`;
+  }).join('') : '<div class="empty">no worker nodes</div>';
+}
+
+const TERMINAL = new Set(['Completed', 'Faulted', 'Cancelled']);
+
+// Elapsed run time. A finished job froze at lastUpdatedAt; a running one is still going, so it
+// ticks against the wall clock.
+function duration(j) {
+  if (!j.startedAt) return null;
+  const from = Date.parse(j.startedAt);
+  const to = TERMINAL.has(j.status) ? Date.parse(j.lastUpdatedAt) : Date.now();
+  return Math.max(0, to - from);
+}
+
+function formatDuration(ms) {
+  if (ms === null) return '<span style="color:var(--dim)">—</span>';
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
+function renderJobs() {
+  // Active work first, then finished, each newest-submitted first. Submission time never moves, so
+  // a row only changes position when a new job arrives or when this one finishes — never on a
+  // progress tick.
+  const rows = [...jobs.values()].sort((a, b) =>
+    (TERMINAL.has(a.status) - TERMINAL.has(b.status)) ||
+    b.submittedAt.localeCompare(a.submittedAt) ||
+    a.id.localeCompare(b.id));
+  el('noJobs').style.display = rows.length ? 'none' : '';
+  el('jobs').innerHTML = rows.map(j => `<tr>
+    <td><code>${esc(j.id)}</code></td>
+    <td style="color:var(--dim)">${esc(j.submitterId)}</td>
+    <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td>
+    <td class="${esc(j.status)}">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div class="mini"><i style="width:${(j.fraction * 100).toFixed(0)}%"></i></div>
+        <span class="num" style="color:var(--text)">${(j.fraction * 100).toFixed(0)}%</span>
+      </div>
+    </td>
+    <td class="num" style="color:var(--dim)">${formatDuration(duration(j))}</td>
+    <td>${shortNode(j.assignedNode)}</td>
+  </tr>`).join('');
+}
+
+// Running jobs' durations tick against the wall clock, so redraw on a slow timer. Purely cosmetic —
+// all state still arrives over the stream.
+setInterval(() => { if ([...jobs.values()].some(j => !TERMINAL.has(j.status))) renderJobs(); }, 1000);
+
+function connect() {
+  const src = new EventSource('/cluster/events');
+
+  src.addEventListener('open', () => {
+    el('dot').classList.add('live');
+    el('connText').textContent = 'live';
+  });
+
+  src.addEventListener('jobs', e => {
+    jobs.clear();
+    for (const j of JSON.parse(e.data).jobs) jobs.set(j.id, j);
+    renderJobs();
+  });
+
+  src.addEventListener('queue', e => renderQueue(JSON.parse(e.data)));
+
+  src.addEventListener('status', e => {
+    const j = JSON.parse(e.data);
+    jobs.set(j.id, j);
+    renderJobs();
+  });
+
+  src.onerror = () => {
+    el('dot').classList.remove('live');
+    el('connText').textContent = 'reconnecting…';
+    // EventSource reconnects on its own; nothing to do but reflect it in the UI.
+  };
+}
+
+el('submit').addEventListener('submit', async e => {
+  e.preventDefault();
+  el('err').textContent = '';
+  const res = await fetch('/jobs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: el('name').value || null,
+      size: Number(el('size').value),
+      submitterId: el('submitter').value || 'dashboard'
+    })
+  });
+  if (res.ok) el('name').value = '';
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    el('err').textContent = `${res.status}: ${body.error ?? 'rejected'}`;
+  }
+});
+
+connect();
+</script>
+</body>
+</html>

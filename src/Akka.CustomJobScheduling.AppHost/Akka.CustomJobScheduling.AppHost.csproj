@@ -14,11 +14,11 @@
     <PackageReference Include="Aaron.Akka.Aspire.Hosting" />
     <PackageReference Include="Aspire.Hosting.AppHost" />
     <PackageReference Include="Aspire.Hosting.Redis" />
-    <PackageReference Include="MessagePack" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Akka.CustomJobScheduling\Akka.CustomJobScheduling.csproj" />
+    <ProjectReference Include="..\Akka.CustomJobScheduling.Api\Akka.CustomJobScheduling.Api.csproj" />
   </ItemGroup>
 
 </Project>

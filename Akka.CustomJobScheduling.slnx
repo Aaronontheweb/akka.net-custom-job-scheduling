@@ -6,6 +6,11 @@
     <File Path="NuGet.Config" />
     <File Path="README.md" />
   </Folder>
+  <Project Path="src/Akka.CustomJobScheduling.Api/Akka.CustomJobScheduling.Api.csproj" />
   <Project Path="src/Akka.CustomJobScheduling.AppHost/Akka.CustomJobScheduling.AppHost.csproj" />
+  <Project Path="src/Akka.CustomJobScheduling.Core/Akka.CustomJobScheduling.Core.csproj" />
   <Project Path="src/Akka.CustomJobScheduling/Akka.CustomJobScheduling.csproj" />
+  <Project Path="tests/Akka.CustomJobScheduling.Actors.Tests/Akka.CustomJobScheduling.Actors.Tests.csproj" />
+  <Project Path="tests/Akka.CustomJobScheduling.Api.Tests/Akka.CustomJobScheduling.Api.Tests.csproj" />
+  <Project Path="tests/Akka.CustomJobScheduling.Core.Tests/Akka.CustomJobScheduling.Core.Tests.csproj" />
 </Solution>

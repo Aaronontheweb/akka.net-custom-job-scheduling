@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
@@ -10,7 +11,6 @@
     <PackageReference Include="Aaron.Akka.Aspire" />
     <PackageReference Include="Aaron.Akka.Discovery.Redis" />
     <PackageReference Include="Akka.Cluster.Hosting" />
-    <PackageReference Include="Akka.Persistence.Redis.Hosting" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" />
     <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" />
@@ -19,6 +19,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Akka.CustomJobScheduling.Core\Akka.CustomJobScheduling.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Akka.CustomJobScheduling.Api.Tests" />
   </ItemGroup>
 
 </Project>

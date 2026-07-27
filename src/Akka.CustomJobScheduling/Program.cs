@@ -1,6 +1,9 @@
 ﻿using Aaron.Akka.Aspire;
 using Aaron.Akka.Discovery.Redis;
 using Akka.Cluster.Hosting;
+using Akka.CustomJobScheduling;
+using Akka.CustomJobScheduling.Core.Actors;
+using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
 using Akka.Persistence.Redis.Hosting;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
@@ -26,6 +29,14 @@ builder.Services.AddOpenTelemetry()
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation())
     .UseOtlpExporter();
+
+// How many work units this node can run in parallel. Uniform across replicas by default; override
+// per-replica from the AppHost to make placement decisions visible in the dashboard.
+var nodeCapacity = builder.Configuration.GetValue(
+    "Jobs:NodeCapacity",
+    JobSchedulingHostingExtensions.DefaultNodeCapacity);
+
+builder.Services.AddJobSchedulingServices(AkkaExecutionMode.Clustered, nodeCapacity);
 
 builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =>
 {
@@ -73,6 +84,13 @@ builder.Services.AddAkka("CustomJobScheduling", (akkaBuilder, serviceProvider) =
                     tags: ["ready", "persistence", "redis", "snapshot-store"])
                 .WithConnectivityCheck(
                     tags: ["ready", "persistence", "redis", "snapshot-store", "connectivity"]));
+
+    akkaBuilder
+        .AddJobSchedulingSerializer()
+        .WithJobSchedulingActors(AkkaExecutionMode.Clustered);
+
+    if (configuration.GetValue(JobLoadGenerator.EnabledKey, false))
+        akkaBuilder.WithSyntheticJobTraffic();
 });
 
 builder.Services.AddHealthChecks();
