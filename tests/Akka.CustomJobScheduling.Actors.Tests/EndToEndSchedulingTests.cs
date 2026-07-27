@@ -76,8 +76,19 @@ public class EndToEndSchedulingTests : JobSchedulingTestKit
         Pacer.RunToCompletion(unitsPerTick: 1);
 
         var probe = CreateTestProbe();
+
+        // Subscribe *before* submitting, and wait for the ack before doing so.
+        //
+        // With a zero-delay pacer a 5-unit job can run start to finish inside a single
+        // millisecond. A subscriber that arrives afterwards is simply told the job is already
+        // Completed and never sees an intermediate frame, so submitting first makes this test a
+        // race that only loses on a fast machine. Ask rather than Tell because the subscription and
+        // the submission arrive from different senders — nothing else orders them.
+        await Tracker.Ask<JobTrackerQueryResponses.SubscribeAck>(
+            new JobTrackerQueries.SubscribeToJob(new JobId("job-1"), probe),
+            RemainingOrDefault);
+
         await SubmitAsync("job-1", 5);
-        Tracker.Tell(new JobTrackerQueries.SubscribeToJob(new JobId("job-1"), probe));
 
         // Somewhere between "just started" and "finished" the tracker must see partial progress.
         await probe.FishForMessageAsync<JobTrackerNotifications.JobStatusChanged>(
