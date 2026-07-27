@@ -1,4 +1,5 @@
-﻿using Akka.Actor;
+﻿using System.Text.Json.Serialization;
+using Akka.Actor;
 using Akka.Cluster;
 
 namespace Akka.CustomJobScheduling.Core.Jobs;
@@ -29,11 +30,13 @@ public sealed record NodeStatus(
     JobSize MaximumCapacity,
     JobSize CapacityInUse)
 {
+    [JsonIgnore]
     public JobSize AvailableCapacity => MaximumCapacity.Reduce(CapacityInUse);
 
     /// <summary>
     /// Whether this node is in a state where it may be handed new work at all.
     /// </summary>
+    [JsonIgnore]
     public bool IsEligible => Status is MemberStatus.Up or MemberStatus.WeaklyUp && Reachable;
 
     public bool HasCapacityFor(JobDefinition job) => AvailableCapacity >= job.Size;
@@ -96,6 +99,7 @@ public sealed record JobProgress(
     DateTimeOffset LastUpdatedAt) : IWithJobId
 {
     /// <summary>True once the job can no longer change state.</summary>
+    [JsonIgnore]
     public bool IsTerminal =>
         Status is JobStatus.Completed or JobStatus.Faulted or JobStatus.Cancelled;
 }

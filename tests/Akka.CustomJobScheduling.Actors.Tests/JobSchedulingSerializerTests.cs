@@ -1,5 +1,5 @@
-using System.Buffers;
 using System.Collections.Immutable;
+using System.Text;
 using Akka.Actor;
 using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.Actors;
@@ -8,7 +8,6 @@ using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
 using Akka.Serialization;
-using MessagePack;
 using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
@@ -187,36 +186,30 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
     }
 
     [Fact]
-    public void Reads_records_written_before_a_field_was_appended()
+    public void Reads_json_that_predates_a_field()
     {
-        // Hand-writes JobStatusResult in its original four-field shape, exactly as a process on the
-        // previous version would have — SubmittedAt and StartedAt did not exist yet.
-        //
-        // This is the append-only evolution rule under test. It matters because there is already a
-        // Redis journal in the wild holding records in the old shape; if a reader threw on a short
-        // array instead of defaulting, recovery would fail on real data.
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new MessagePackWriter(buffer);
-
-        writer.WriteArrayHeader(4);
-        writer.Write("legacy-job");
-        writer.Write("legacy-submitter");
-
-        writer.WriteArrayHeader(4);                 // JobProgress
-        writer.Write("legacy-job");
-        writer.Write((int)JobStatus.Running);
-        writer.WriteArrayHeader(2);                 // WorkProgress
-        writer.Write(3u);
-        writer.Write(10u);
-        writer.Write(At.UtcTicks);
-
-        writer.Write(NodeA.ToString());             // AssignedNode
-        writer.Flush();
+        // JSON as a process on an earlier schema would have written it — before SubmittedAt and
+        // StartedAt existed. System.Text.Json fills missing members with defaults rather than
+        // throwing, so an older journal entry still loads. The readable JSON here is the whole point
+        // of the migration: the previous version of this test hand-assembled MessagePack bytes.
+        const string json = """
+            {
+              "Id": "legacy-job",
+              "SubmitterId": "legacy-submitter",
+              "Progress": {
+                "Id": "legacy-job",
+                "Status": "Running",
+                "Progress": { "Completed": 3, "Total": 10 },
+                "LastUpdatedAt": "2026-07-24T12:00:00+00:00"
+              },
+              "AssignedNode": "akka://JobScheduling@node-a:2552"
+            }
+            """;
 
         var serializer = new JobSchedulingSerializer((ExtendedActorSystem)Sys);
 
         var restored = (JobTrackerQueryResponses.JobStatusResult)serializer.FromBinary(
-            buffer.WrittenSpan.ToArray(),
+            Encoding.UTF8.GetBytes(json),
             JobSchedulingManifests.JobStatusResult);
 
         Assert.Equal(new JobId("legacy-job"), restored.Id);
@@ -224,33 +217,27 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
         Assert.Equal(JobStatus.Running, restored.Progress.Status);
         Assert.Equal(NodeA, restored.AssignedNode);
 
-        // The appended fields fall back rather than throwing.
-        Assert.Equal(At, restored.SubmittedAt);
+        // The absent members come back as defaults.
+        Assert.Equal(default, restored.SubmittedAt);
         Assert.Null(restored.StartedAt);
     }
 
     [Fact]
-    public void Tolerates_records_written_by_a_newer_schema()
+    public void Ignores_unknown_json_fields_from_a_newer_schema()
     {
-        // The other direction: a future version appends a fifth field to JobDefinition. An older
-        // reader must skip what it doesn't understand rather than choke.
-        var buffer = new ArrayBufferWriter<byte>();
-        var writer = new MessagePackWriter(buffer);
-
-        writer.WriteArrayHeader(3);                 // ExecuteJob, but with a longer JobDefinition
-        writer.WriteArrayHeader(4);
-        writer.Write("future-job");
-        writer.Write(42u);
-        writer.Write("something-added-later");
-        writer.Write(7);
-        writer.WriteNil();                          // two trailing fields we know nothing about
-        writer.WriteNil();
-        writer.Flush();
+        // The other direction: a future version adds members this reader has never heard of.
+        // System.Text.Json ignores unknown properties, so the older reader keeps working.
+        const string json = """
+            {
+              "Job": { "Id": "future-job", "Size": 42, "SomethingAddedLater": "ignore me" },
+              "SomethingElse": 7
+            }
+            """;
 
         var serializer = new JobSchedulingSerializer((ExtendedActorSystem)Sys);
 
         var restored = (ExecutionMessages.ExecuteJob)serializer.FromBinary(
-            buffer.WrittenSpan.ToArray(),
+            Encoding.UTF8.GetBytes(json),
             JobSchedulingManifests.ExecuteJob);
 
         Assert.Equal(new JobId("future-job"), restored.Job.Id);

@@ -46,6 +46,7 @@ public static class JobTrackerEvents
         JobSubmitterId SubmitterId,
         DateTimeOffset OccurredAt) : IJobTrackerEvent, IWithJobId, IWithJobSubmitterId
     {
+        [System.Text.Json.Serialization.JsonIgnore]
         public JobId Id => Job.Id;
     }
 

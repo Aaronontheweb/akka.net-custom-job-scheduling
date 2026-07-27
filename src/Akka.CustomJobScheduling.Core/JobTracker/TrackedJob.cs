@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Akka.Actor;
 using Akka.CustomJobScheduling.Core.Jobs;
 
@@ -32,11 +33,14 @@ public sealed record TrackedJob(
     DateTimeOffset SubmittedAt,
     DateTimeOffset? StartedAt) : IJobTrackerDomain, IWithJobId, IWithJobSubmitterId
 {
+    [JsonIgnore]
     public JobId Id => Definition.Id;
 
+    [JsonIgnore]
     public JobSize Size => Definition.Size;
 
     /// <summary>True once the job can no longer change state.</summary>
+    [JsonIgnore]
     public bool IsTerminal =>
         Status is JobStatus.Completed or JobStatus.Faulted or JobStatus.Cancelled;
 
