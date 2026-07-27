@@ -49,7 +49,16 @@ public static class JobTrackerEvents
         public JobId Id => Job.Id;
     }
 
-    /// <summary>A queued job was placed onto a node, consuming that node's capacity.</summary>
+    /// <summary>
+    /// A job was dispatched from the global queue into a specific node's queue. It's committed to
+    /// that node but not yet running — no capacity is consumed until <see cref="JobScheduled"/>.
+    /// </summary>
+    public sealed record JobQueued(JobId Id, Address NodeAddress, DateTimeOffset OccurredAt)
+        : IJobTrackerEvent, IWithJobId;
+
+    /// <summary>
+    /// A queued job started running on its node, consuming that node's capacity.
+    /// </summary>
     public sealed record JobScheduled(JobId Id, Address NodeAddress, DateTimeOffset OccurredAt)
         : IJobTrackerEvent, IWithJobId;
 

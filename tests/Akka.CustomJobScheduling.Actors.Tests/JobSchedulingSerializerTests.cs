@@ -50,6 +50,7 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
         { new JobTrackerEvents.NodeRemoved(NodeA, At), JobSchedulingManifests.NodeRemoved },
         { new JobTrackerEvents.NodeStatusChanged(NodeA, MemberStatus.WeaklyUp, false, At), JobSchedulingManifests.NodeStatusChanged },
         { new JobTrackerEvents.JobAccepted(Job("j1", 40), new JobSubmitterId("s1"), At), JobSchedulingManifests.JobAccepted },
+        { new JobTrackerEvents.JobQueued(new JobId("j1"), NodeA, At), JobSchedulingManifests.JobQueued },
         { new JobTrackerEvents.JobScheduled(new JobId("j1"), NodeA, At), JobSchedulingManifests.JobScheduled },
         { new JobTrackerEvents.JobProgressed(new JobId("j1"), Progress(5, 40), At), JobSchedulingManifests.JobProgressed },
         { new JobTrackerEvents.JobCompleted(new JobId("j1"), At), JobSchedulingManifests.JobCompleted },
@@ -128,11 +129,13 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
             [
                 new NodeStatus(NodeA, MemberStatus.Up, true, At, new JobSize(100), new JobSize(60)),
                 new NodeStatus(NodeB, MemberStatus.WeaklyUp, false, At, new JobSize(100), JobSize.Zero)
-            ]);
+            ],
+            QueuedCount: 3);
 
         var restored = (JobTrackerQueryResponses.QueueStatus)RoundTrip(status);
 
         Assert.Equal(2, restored.WaitingCount);
+        Assert.Equal(3, restored.QueuedCount);
         Assert.Equal(new JobSize(140), restored.AvailableCapacity);
         // ImmutableArray<T> equality is reference-based on the backing array, so compare elementwise.
         Assert.Equal<NodeStatus>(status.Nodes.AsEnumerable(), restored.Nodes.AsEnumerable());

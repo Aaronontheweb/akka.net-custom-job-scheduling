@@ -23,6 +23,7 @@ public static class JobSchedulingManifests
     public const string NodeRemoved = "e:node-removed";
     public const string NodeStatusChanged = "e:node-status-changed";
     public const string JobAccepted = "e:job-accepted";
+    public const string JobQueued = "e:job-queued";
     public const string JobScheduled = "e:job-scheduled";
     public const string JobProgressed = "e:job-progressed";
     public const string JobCompleted = "e:job-completed";

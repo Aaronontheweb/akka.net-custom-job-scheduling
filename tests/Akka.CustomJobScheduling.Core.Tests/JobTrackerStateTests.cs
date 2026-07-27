@@ -140,20 +140,26 @@ public class JobTrackerStateTests
     }
 
     [Fact]
-    public void A_job_at_the_front_of_the_queue_blocks_smaller_jobs_behind_it()
+    public void A_large_job_does_not_block_small_jobs_which_run_on_other_nodes()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
-        tracker.Send(new SubmitJob(Job("job-1", 80), Submitter));
+        tracker.Send(Joining("node-b", 100));
 
-        // 20 units free: job-2 doesn't fit, job-3 would — but FIFO means it waits its turn.
-        tracker.Send(new SubmitJob(Job("job-2", 50), Submitter));
-        tracker.Send(new SubmitJob(Job("job-3", 10), Submitter));
+        // Load both nodes so a whole-node job can't fit on either right now.
+        tracker.Send(new SubmitJob(Job("filler-a", 60), Submitter));  // -> node-a, runs
+        tracker.Send(new SubmitJob(Job("filler-b", 60), Submitter));  // -> node-b, runs
 
-        Assert.Equal(JobStatus.Running, tracker.Job("job-1").Status);
-        Assert.Equal(JobStatus.Waiting, tracker.Job("job-2").Status);
-        Assert.Equal(JobStatus.Waiting, tracker.Job("job-3").Status);
-        Assert.Equal([new JobId("job-2"), new JobId("job-3")], tracker.State.PendingJobs);
+        // A job that needs a whole node. It's committed to one node's queue and waits there...
+        tracker.Send(new SubmitJob(Job("big", 100), Submitter));
+
+        // ...while a small job submitted right behind it runs immediately on the other node. This is
+        // the whole point of dispatch-to-per-node-queues: no global head-of-line block.
+        tracker.Send(new SubmitJob(Job("small", 30), Submitter));
+
+        Assert.Equal(JobStatus.Queued, tracker.Job("big").Status);
+        Assert.Equal(JobStatus.Running, tracker.Job("small").Status);
+        Assert.NotEqual(tracker.Job("big").AssignedNode, tracker.Job("small").AssignedNode);
     }
 
     [Fact]
@@ -445,21 +451,32 @@ public class JobTrackerStateTests
     }
 
     [Fact]
-    public void Work_queued_while_a_node_was_unreachable_lands_as_soon_as_it_is_removed()
+    public void Work_is_dispatched_only_to_reachable_nodes()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(Joining("node-b", 100));
         tracker.Send(new NodeReachabilityChanged(Node("node-b"), Reachable: false));
+
+        // node-b is unreachable, so both jobs are dispatched to node-a — the only eligible node.
         tracker.Send(new SubmitJob(Job("job-1", 80), Submitter));
         tracker.Send(new SubmitJob(Job("job-2", 80), Submitter));
 
-        // node-b is not eligible, so job-2 waits even though node-b nominally has room.
-        Assert.Equal(JobStatus.Waiting, tracker.Job("job-2").Status);
+        Assert.Equal(Node("node-a"), tracker.Job("job-1").AssignedNode);
+        Assert.Equal(JobStatus.Running, tracker.Job("job-1").Status);
 
+        // job-2 can't run yet (node-a is full) but it's committed to node-a's queue, never to the
+        // unreachable node-b.
+        Assert.Equal(Node("node-a"), tracker.Job("job-2").AssignedNode);
+        Assert.Equal(JobStatus.Queued, tracker.Job("job-2").Status);
+
+        // node-b returns. New work uses it, but job-2 stays where it was committed — assignment is
+        // early-binding, jobs don't migrate once queued on a node.
         tracker.Send(new NodeReachabilityChanged(Node("node-b"), Reachable: true));
+        tracker.Send(new SubmitJob(Job("job-3", 40), Submitter));
 
-        Assert.Equal(Node("node-b"), tracker.Job("job-2").AssignedNode);
+        Assert.Equal(Node("node-b"), tracker.Job("job-3").AssignedNode);
+        Assert.Equal(Node("node-a"), tracker.Job("job-2").AssignedNode);
     }
 
     [Fact]
@@ -546,13 +563,16 @@ public class JobTrackerStateTests
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(Joining("node-b", 60));
-        tracker.Send(new SubmitJob(Job("job-1", 60), Submitter));  // -> node-a
-        tracker.Send(new SubmitJob(Job("job-2", 50), Submitter));  // -> node-b
-        tracker.Send(new SubmitJob(Job("job-3", 90), Submitter));  // queued
+        tracker.Send(new SubmitJob(Job("job-1", 60), Submitter));  // -> node-a, runs
+        tracker.Send(new SubmitJob(Job("job-2", 50), Submitter));  // -> node-b, runs
+        tracker.Send(new SubmitJob(Job("job-3", 90), Submitter));  // only node-a is big enough; queued
 
         var status = tracker.State.GetQueueStatus();
 
-        Assert.Equal(1, status.WaitingCount);
+        // Nothing sits in the global queue — job-3 is committed to node-a's queue, so it's Queued,
+        // not Waiting.
+        Assert.Equal(0, status.WaitingCount);
+        Assert.Equal(1, status.QueuedCount);
         Assert.Equal(2, status.RunningCount);
         Assert.Equal(new JobSize(90), status.QueuedWork);
         Assert.Equal(new JobSize(160), status.TotalCapacity);
@@ -621,6 +641,92 @@ public class JobTrackerStateTests
         var requeued = tracker.Job("job-1");
         Assert.Null(requeued.StartedAt);
         Assert.Equal(Now, requeued.SubmittedAt);
+    }
+
+    [Fact]
+    public void Node_loss_reschedules_both_running_and_queued_jobs()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+
+        // With only node-a in the cluster, R runs and Q queues behind it on node-a.
+        tracker.Send(new SubmitJob(Job("R", 60), Submitter));
+        tracker.Send(new SubmitJob(Job("Q", 60), Submitter));
+        Assert.Equal(JobStatus.Running, tracker.Job("R").Status);
+        Assert.Equal(JobStatus.Queued, tracker.Job("Q").Status);
+        Assert.Equal(Node("node-a"), tracker.Job("Q").AssignedNode);
+
+        // Survivors join. The queued job doesn't migrate — early binding keeps it on node-a.
+        tracker.Send(Joining("node-b", 100));
+        tracker.Send(Joining("node-c", 100));
+        Assert.Equal(Node("node-a"), tracker.Job("Q").AssignedNode);
+
+        // node-a dies. Both the running job and the merely-queued job must land on survivors —
+        // the queued one is exactly the case a running-only requeue would silently orphan.
+        tracker.Send(new NodeLeft(Node("node-a")));
+
+        Assert.DoesNotContain(Node("node-a"), tracker.State.Nodes.Keys);
+
+        foreach (var id in new[] { "R", "Q" })
+        {
+            var job = tracker.Job(id);
+            Assert.Contains(job.AssignedNode, new[] { Node("node-b"), Node("node-c") });
+            Assert.NotEqual(JobStatus.Waiting, job.Status); // rescheduled, not stranded
+        }
+    }
+
+    [Fact]
+    public void Previously_running_jobs_reschedule_ahead_of_previously_queued_ones()
+    {
+        var tracker = new Tracker();
+
+        // node-a alone at first, so R (70) runs and Q (40) can't fit the remaining 30 and queues.
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("R", 70), Submitter));
+        tracker.Send(new SubmitJob(Job("Q", 40), Submitter));
+        Assert.Equal(JobStatus.Running, tracker.Job("R").Status);
+        Assert.Equal(JobStatus.Queued, tracker.Job("Q").Status);
+
+        // Two survivors. node-c is small (max 40) with 20 already used, so it can't hold R at all
+        // and has no room to run Q. node-b is the only node R fits, and the only one with capacity.
+        tracker.Send(Joining("node-c", 40));
+        tracker.Send(new SubmitJob(Job("filler", 20), Submitter)); // -> node-c
+        Assert.Equal(Node("node-c"), tracker.Job("filler").AssignedNode);
+        tracker.Send(Joining("node-b", 100));
+
+        // node-a dies. Both R and Q reschedule, but there's room to *run* only one right now.
+        // Because requeue dispatches previously-running jobs first, R claims node-b and runs; Q,
+        // dispatched after, lands on node-c and has to wait.
+        //
+        // The dispatch order is load-bearing here: had Q been dispatched first it would have taken
+        // node-b and run, leaving R to wait. Within a single node, submission time still decides —
+        // this guarantee is about which survivor each job claims, not intra-node ordering.
+        tracker.Send(new NodeLeft(Node("node-a")));
+
+        Assert.Equal(Node("node-b"), tracker.Job("R").AssignedNode);
+        Assert.Equal(JobStatus.Running, tracker.Job("R").Status);
+
+        Assert.Equal(Node("node-c"), tracker.Job("Q").AssignedNode);
+        Assert.Equal(JobStatus.Queued, tracker.Job("Q").Status);
+    }
+
+    [Fact]
+    public void Requeuing_a_queued_job_leaves_node_capacity_accounting_intact()
+    {
+        // A queued job never consumed CapacityInUse. Cancelling or requeuing it must release
+        // nothing — releasing would drop the node's InUse below the work actually running on it.
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("R", 70), Submitter));  // runs on node-a
+        tracker.Send(new SubmitJob(Job("Q", 50), Submitter));  // 30 free < 50, queues on node-a
+
+        Assert.Equal(JobStatus.Queued, tracker.Job("Q").Status);
+        Assert.Equal(new JobSize(70), tracker.Node(Node("node-a")).CapacityInUse);
+
+        tracker.Send(new CancelJob(new JobId("Q"), Submitter, "never mind"));
+
+        Assert.Equal(JobStatus.Cancelled, tracker.Job("Q").Status);
+        Assert.Equal(new JobSize(70), tracker.Node(Node("node-a")).CapacityInUse);
     }
 
     [Fact]

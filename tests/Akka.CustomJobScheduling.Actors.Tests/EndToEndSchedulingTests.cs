@@ -105,9 +105,9 @@ public class EndToEndSchedulingTests : JobSchedulingTestKit
         await SubmitAsync("job-1", 80);
         await AwaitStatusAsync("job-1", JobStatus.Running);
 
-        // Doesn't fit alongside job-1.
+        // Doesn't fit alongside job-1 — committed to node-a's queue, waiting for its capacity.
         await SubmitAsync("job-2", 50);
-        Assert.Equal(JobStatus.Waiting, (await FoundAsync("job-2")).Progress.Status);
+        Assert.Equal(JobStatus.Queued, (await FoundAsync("job-2")).Progress.Status);
 
         Tracker.Tell(new JobTrackerCommands.CancelJob(
             new JobId("job-1"),

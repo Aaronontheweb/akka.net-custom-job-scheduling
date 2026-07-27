@@ -278,10 +278,12 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (!Nodes.ContainsKey(command.NodeAddress))
             return JobTrackerDecision.None;
 
-        // Requeue before forgetting the node, so capacity accounting unwinds in the right order.
+        // Requeue everything the node was carrying — running and queued alike — before forgetting
+        // the node, so capacity accounting unwinds in the right order. JobsCommittedTo orders
+        // previously-running jobs ahead of previously-queued ones, so they reschedule first.
         var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
 
-        foreach (var job in JobsRunningOn(command.NodeAddress))
+        foreach (var job in JobsCommittedTo(command.NodeAddress))
         {
             events.Add(new JobTrackerEvents.JobRequeued(
                 job.Id,
@@ -360,7 +362,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
         foreach (var address in departed)
         {
-            foreach (var job in JobsRunningOn(address))
+            foreach (var job in JobsCommittedTo(address))
             {
                 events.Add(new JobTrackerEvents.JobRequeued(
                     job.Id,
@@ -407,45 +409,107 @@ public sealed record JobTrackerState : IJobTrackerDomain
     /// </remarks>
     public ImmutableArray<IJobTrackerEvent> PlacePendingJobs(DateTimeOffset now)
     {
-        if (PendingJobs.IsEmpty || Nodes.IsEmpty)
+        if (Nodes.IsEmpty)
             return ImmutableArray<IJobTrackerEvent>.Empty;
 
+        var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
         var projected = this;
-        var placements = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
 
-        while (!projected.PendingJobs.IsEmpty)
-        {
-            var nextId = projected.PendingJobs[0];
+        projected = projected.Dispatch(now, events);
+        projected = projected.Run(now, events);
 
-            // Defensive: Apply keeps PendingJobs and Jobs in lockstep, so this shouldn't happen.
-            // Drop the orphan locally rather than spinning forever on it.
-            if (!projected.Jobs.TryGetValue(nextId, out var job))
-            {
-                projected = projected.Dequeue(nextId);
-                continue;
-            }
-
-            var target = projected.SelectNodeFor(job.Definition);
-            if (target is null)
-                break;
-
-            var scheduled = new JobTrackerEvents.JobScheduled(nextId, target, now);
-            placements.Add(scheduled);
-            projected = projected.Apply(scheduled);
-        }
-
-        return placements.ToImmutable();
+        return events.ToImmutable();
     }
 
     /// <summary>
-    /// The eligible node with the most spare capacity, ties broken deterministically by address.
+    /// Phase 1 — drain the global queue onto per-node queues. Every waiting job is assigned to the
+    /// least-loaded eligible node big enough to hold it, so one large job can never block the queue:
+    /// it lands in a node's queue and smaller jobs are steered to other nodes.
     /// </summary>
-    private Address? SelectNodeFor(JobDefinition job) =>
+    private JobTrackerState Dispatch(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
+    {
+        var projected = this;
+
+        // Snapshot: dispatching removes ids from PendingJobs, so iterate the original list and skip
+        // anything no longer waiting.
+        foreach (var id in PendingJobs)
+        {
+            if (!projected.Jobs.TryGetValue(id, out var job) || job.Status != JobStatus.Waiting)
+                continue;
+
+            var target = projected.SelectDispatchNode(job.Definition);
+            if (target is null)
+                continue; // no eligible node can ever hold it right now — leave it waiting
+
+            var queued = new JobTrackerEvents.JobQueued(id, target, now);
+            events.Add(queued);
+            projected = projected.Apply(queued);
+        }
+
+        return projected;
+    }
+
+    /// <summary>
+    /// Phase 2 — each node runs the head of its own queue as soon as real capacity frees up. Strict
+    /// per-node FIFO: if the head doesn't fit yet, the node waits and drains toward it rather than
+    /// running a later job past it.
+    /// </summary>
+    private JobTrackerState Run(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
+    {
+        var projected = this;
+
+        foreach (var address in Nodes.Keys)
+        {
+            while (true)
+            {
+                var head = projected.NodeQueue(address).FirstOrDefault();
+                if (head is null)
+                    break;
+
+                if (!projected.Nodes.TryGetValue(address, out var node) || !node.CanAccept(head.Definition))
+                    break;
+
+                var scheduled = new JobTrackerEvents.JobScheduled(head.Id, address, now);
+                events.Add(scheduled);
+                projected = projected.Apply(scheduled);
+            }
+        }
+
+        return projected;
+    }
+
+    /// <summary>
+    /// The least-loaded eligible node whose maximum capacity can hold the job, ties broken by
+    /// address. "Loaded" is running plus already-queued work, so a burst spreads across the cluster
+    /// and a node already holding a big job stops attracting more.
+    /// </summary>
+    private Address? SelectDispatchNode(JobDefinition job) =>
         Nodes.Values
-            .Where(node => node.CanAccept(job))
-            .OrderBy(node => node, MostAvailableCapacityComparer.Instance)
+            .Where(node => node.IsEligible && node.MaximumCapacity >= job.Size)
+            .OrderBy(CommittedLoad)
+            .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
             .Select(node => node.NodeAddress)
             .FirstOrDefault();
+
+    /// <summary>Running plus queued work committed to a node.</summary>
+    private JobSize CommittedLoad(NodeStatus node) =>
+        node.CapacityInUse + QueuedSizeOn(node.NodeAddress);
+
+    private JobSize QueuedSizeOn(Address address) =>
+        Total(NodeQueue(address).Select(job => job.Size));
+
+    /// <summary>
+    /// A node's queue: jobs committed to it but not yet running, ordered FIFO by submission.
+    /// </summary>
+    /// <remarks>
+    /// Derived, not stored — a job's node lives only on its <see cref="TrackedJob"/>, so there's no
+    /// second structure that could drift out of sync with it.
+    /// </remarks>
+    public IEnumerable<TrackedJob> NodeQueue(Address address) =>
+        Jobs.Values
+            .Where(job => job.Status == JobStatus.Queued && Equals(job.AssignedNode, address))
+            .OrderBy(job => job.SubmittedAt)
+            .ThenBy(job => job.Id.Value, StringComparer.Ordinal);
 
     // ------------------------------------------------------------------
     // Apply: event -> new state
@@ -460,6 +524,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         JobTrackerEvents.NodeRemoved e => ForgetNode(e.NodeAddress),
         JobTrackerEvents.NodeStatusChanged e => ApplyNodeStatusChanged(e),
         JobTrackerEvents.JobAccepted e => ApplyJobAccepted(e),
+        JobTrackerEvents.JobQueued e => ApplyJobQueued(e),
         JobTrackerEvents.JobScheduled e => ApplyJobScheduled(e),
         JobTrackerEvents.JobProgressed e => ApplyJobProgressed(e),
         JobTrackerEvents.JobCompleted e => ApplyJobCompleted(e),
@@ -491,11 +556,25 @@ public sealed record JobTrackerState : IJobTrackerDomain
         return WithJob(job).Enqueue(job.Id);
     }
 
+    private JobTrackerState ApplyJobQueued(JobTrackerEvents.JobQueued e)
+    {
+        if (!Jobs.TryGetValue(e.Id, out var job))
+            return this;
+
+        // Out of the global queue, into the node's queue. No capacity moves — a queued job isn't
+        // running yet, so it doesn't touch CapacityInUse.
+        return WithJob(job.QueueOn(e.NodeAddress, e.OccurredAt))
+            .Dequeue(e.Id);
+    }
+
     private JobTrackerState ApplyJobScheduled(JobTrackerEvents.JobScheduled e)
     {
         if (!Jobs.TryGetValue(e.Id, out var job))
             return this;
 
+        // The job leaves its node queue and starts running, now consuming capacity. Dequeue is a
+        // no-op for the normal Queued -> Running path (queued jobs aren't in the global queue), but
+        // stays as a guard.
         return WithJob(job.RunOn(e.NodeAddress, e.OccurredAt))
             .Dequeue(e.Id)
             .Reserve(e.NodeAddress, job.Size);
@@ -538,19 +617,41 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (!Jobs.TryGetValue(e.Id, out var job))
             return this;
 
-        return WithJob(job.Requeue(e.OccurredAt))
-            .EnqueueFront(e.Id)
-            .ReleaseFrom(e.PreviousNode, job.Size);
+        // Only a job that was actually Running held CapacityInUse on the node. A Queued job was
+        // merely committed to the node's queue and never consumed capacity, so releasing here would
+        // drop InUse below the real running work and leave the node looking emptier than it is.
+        var released = job.Status == JobStatus.Running
+            ? ReleaseFrom(e.PreviousNode, job.Size)
+            : this;
+
+        // Appended at the back of the global queue. Node-loss emits requeues running-first, and the
+        // same Decide re-dispatches the whole batch, so append order is the reschedule order — no
+        // front-insertion reversal to reason about. A job that can't currently be placed is simply
+        // skipped by Dispatch, so it never blocks the ones behind it.
+        return released
+            .WithJob(job.Requeue(e.OccurredAt))
+            .Enqueue(e.Id);
     }
 
     /// <summary>
     /// Common tail for every terminal transition: record it, drop it from the queue (in case it was
-    /// never placed), and hand its capacity back.
+    /// never placed), and hand back any capacity it was actually using.
     /// </summary>
-    private JobTrackerState Finish(TrackedJob before, TrackedJob after) =>
-        WithJob(after)
-            .Dequeue(before.Id)
-            .ReleaseFrom(before.AssignedNode, before.Size);
+    /// <remarks>
+    /// A Running job holds real capacity; a Queued or Waiting job doesn't. Releasing capacity for a
+    /// job that never ran would corrupt the node's accounting, so the release is gated on the
+    /// pre-transition status.
+    /// </remarks>
+    private JobTrackerState Finish(TrackedJob before, TrackedJob after)
+    {
+        var released = before.Status == JobStatus.Running
+            ? ReleaseFrom(before.AssignedNode, before.Size)
+            : this;
+
+        return released
+            .WithJob(after)
+            .Dequeue(before.Id);
+    }
 
     // ------------------------------------------------------------------
     // Single-purpose state updates
@@ -567,15 +668,6 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
     private JobTrackerState Enqueue(JobId id) =>
         this with { PendingJobs = PendingJobs.Add(id) };
-
-    /// <summary>Back to the front of the line — this job already waited its turn once.</summary>
-    private JobTrackerState EnqueueFront(JobId id)
-    {
-        if (PendingJobs.Contains(id))
-            return this;
-
-        return this with { PendingJobs = PendingJobs.Insert(0, id) };
-    }
 
     private JobTrackerState Dequeue(JobId id) =>
         this with { PendingJobs = PendingJobs.Remove(id) };
@@ -638,27 +730,37 @@ public sealed record JobTrackerState : IJobTrackerDomain
     }
 
     /// <summary>Answers <see cref="JobTrackerQueries.GetQueueStatus"/>.</summary>
-    public JobTrackerQueryResponses.QueueStatus GetQueueStatus() => new(
-        WaitingCount: PendingJobs.Count,
-        RunningCount: Jobs.Values.Count(job => job.Status == JobStatus.Running),
-        QueuedWork: Total(WaitingJobs().Select(job => job.Size)),
-        TotalCapacity: Total(Nodes.Values.Select(node => node.MaximumCapacity)),
-        AvailableCapacity: Total(EligibleNodes().Select(node => node.AvailableCapacity)),
-        Nodes: NodesByAvailability());
-
-    private IEnumerable<TrackedJob> WaitingJobs()
+    public JobTrackerQueryResponses.QueueStatus GetQueueStatus()
     {
-        foreach (var id in PendingJobs)
-        {
-            if (Jobs.TryGetValue(id, out var job))
-                yield return job;
-        }
+        var waiting = Jobs.Values.Count(job => job.Status == JobStatus.Waiting);
+        var queued = Jobs.Values.Count(job => job.Status == JobStatus.Queued);
+
+        var notRunning = Jobs.Values
+            .Where(job => job.Status is JobStatus.Waiting or JobStatus.Queued)
+            .Select(job => job.Size);
+
+        return new JobTrackerQueryResponses.QueueStatus(
+            WaitingCount: waiting,
+            RunningCount: Jobs.Values.Count(job => job.Status == JobStatus.Running),
+            QueuedWork: Total(notRunning),
+            TotalCapacity: Total(Nodes.Values.Select(node => node.MaximumCapacity)),
+            AvailableCapacity: Total(EligibleNodes().Select(node => node.AvailableCapacity)),
+            Nodes: NodesByAvailability(),
+            QueuedCount: queued);
     }
 
-    private IEnumerable<TrackedJob> JobsRunningOn(Address address) =>
+    /// <summary>
+    /// Every job a node is carrying — running or merely queued — ordered so previously-running jobs
+    /// come first. That ordering is what makes a node death reschedule in-flight work ahead of work
+    /// that hadn't started, per the requeue path.
+    /// </summary>
+    private IEnumerable<TrackedJob> JobsCommittedTo(Address address) =>
         Jobs.Values
-            .Where(job => job.IsRunningOn(address))
-            .OrderBy(job => job.Id.Value, StringComparer.Ordinal);
+            .Where(job => job.Status is JobStatus.Running or JobStatus.Queued
+                          && Equals(job.AssignedNode, address))
+            .OrderBy(job => job.Status == JobStatus.Running ? 0 : 1)
+            .ThenBy(job => job.SubmittedAt)
+            .ThenBy(job => job.Id.Value, StringComparer.Ordinal);
 
     private IEnumerable<NodeStatus> EligibleNodes() => Nodes.Values.Where(node => node.IsEligible);
 

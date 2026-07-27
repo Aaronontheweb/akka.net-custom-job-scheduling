@@ -67,7 +67,9 @@ public sealed record NodeStatus(
 /// </summary>
 public enum JobStatus
 {
+    /// <summary>Accepted, sitting in the global queue, not yet assigned to a node.</summary>
     Waiting = 0,
+
     Running = 1,
     Faulted = 2,
     Completed = 3,
@@ -75,7 +77,13 @@ public enum JobStatus
     /// <summary>
     /// Withdrawn by the submitter before it finished.
     /// </summary>
-    Cancelled = 4
+    Cancelled = 4,
+
+    /// <summary>
+    /// Assigned to a specific node and waiting in that node's queue for capacity to free up. Not
+    /// yet executing, so it holds no <see cref="NodeStatus.CapacityInUse"/>.
+    /// </summary>
+    Queued = 5
 }
 
 /// <summary>

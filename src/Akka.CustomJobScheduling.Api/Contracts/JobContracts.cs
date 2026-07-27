@@ -86,8 +86,11 @@ public sealed record JobListResponse(IReadOnlyList<JobStatusResponse> Jobs, int 
 }
 
 /// <summary>Queue depth and cluster capacity.</summary>
+/// <param name="Waiting">In the global queue, not yet assigned to a node.</param>
+/// <param name="Queued">Assigned to a node's queue, awaiting its capacity.</param>
 public sealed record QueueStatusResponse(
     int Waiting,
+    int Queued,
     int Running,
     uint QueuedWork,
     uint TotalCapacity,
@@ -96,6 +99,7 @@ public sealed record QueueStatusResponse(
 {
     public static QueueStatusResponse From(JobTrackerQueryResponses.QueueStatus status) => new(
         status.WaitingCount,
+        status.QueuedCount,
         status.RunningCount,
         status.QueuedWork.Size,
         status.TotalCapacity.Size,

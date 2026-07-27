@@ -58,6 +58,18 @@ public sealed record TrackedJob(
             acceptedAt,
             StartedAt: null);
 
+    /// <summary>
+    /// Dispatched from the global queue into a node's queue. Committed to that node but not yet
+    /// running, so it takes no capacity yet — <see cref="StartedAt"/> stays null.
+    /// </summary>
+    public TrackedJob QueueOn(Address node, DateTimeOffset at) =>
+        this with
+        {
+            Status = JobStatus.Queued,
+            AssignedNode = node,
+            LastUpdatedAt = at
+        };
+
     public TrackedJob RunOn(Address node, DateTimeOffset at) =>
         this with
         {

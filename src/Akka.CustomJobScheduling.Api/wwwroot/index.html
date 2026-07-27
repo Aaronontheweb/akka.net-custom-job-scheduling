@@ -58,6 +58,7 @@
     font-weight: 600; border: 1px solid currentColor;
   }
   .Running { color: var(--accent); } .Waiting { color: var(--warn); }
+  .Queued { color: #a371f7; }
   .Completed { color: var(--ok); } .Faulted { color: var(--bad); }
   .Cancelled { color: var(--idle); }
   .mini { width: 90px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
@@ -140,16 +141,19 @@ const shortNode = a => a ? esc(String(a).split('@').pop()) : '<span style="color
 
 function renderQueue(q) {
   el('stats').innerHTML = [
-    ['Running', q.running], ['Waiting', q.waiting],
-    ['Queued work', q.queuedWork], ['Capacity free', `${q.availableCapacity}/${q.totalCapacity}`]
+    ['Running', q.running], ['Queued', q.queued], ['Waiting', q.waiting],
+    ['Capacity free', `${q.availableCapacity}/${q.totalCapacity}`]
   ].map(([l, n]) => `<div class="stat"><div class="n">${esc(n)}</div><div class="l">${l}</div></div>`).join('');
 
   el('nodes').innerHTML = q.nodes.length ? q.nodes.map(n => {
     const pct = n.maxCapacity ? (n.inUse / n.maxCapacity) * 100 : 0;
     const state = n.reachable ? n.status : `${n.status} · unreachable`;
+    // Per-node queue depth, derived from the jobs we already hold client-side.
+    const queued = [...jobs.values()].filter(j => j.status === 'Queued' && j.assignedNode === n.address).length;
+    const queuedTag = queued ? ` <span style="color:#a371f7">+${queued} queued</span>` : '';
     return `<div class="node">
       <div class="row"><code>${shortNode(n.address)}</code>
-        <span class="num">${n.inUse}/${n.maxCapacity} <span style="color:var(--dim)">${esc(state)}</span></span></div>
+        <span class="num">${n.inUse}/${n.maxCapacity}${queuedTag} <span style="color:var(--dim)">${esc(state)}</span></span></div>
       <div class="bar"><i style="width:${pct}%"></i></div>
     </div>`;
   }).join('') : '<div class="empty">no worker nodes</div>';

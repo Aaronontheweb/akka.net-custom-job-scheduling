@@ -143,11 +143,13 @@ public class JobTrackerActorTests : JobSchedulingTestKit
         await SubmitAsync("job-1", 60);
         await AwaitStatusAsync("job-1", JobStatus.Running);
         await SubmitAsync("job-2", 80);
+        await AwaitStatusAsync("job-2", JobStatus.Queued);
 
         var queue = await QueueAsync();
 
         Assert.Equal(1, queue.RunningCount);
-        Assert.Equal(1, queue.WaitingCount);
+        Assert.Equal(0, queue.WaitingCount);   // job-2 is committed to node-a's queue, not global
+        Assert.Equal(1, queue.QueuedCount);
         Assert.Equal(new JobSize(80), queue.QueuedWork);
         Assert.Equal(new JobSize(40), queue.AvailableCapacity);
     }

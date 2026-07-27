@@ -89,19 +89,21 @@ public static class JobTrackerQueryResponses
     /// <summary>
     /// A point-in-time snapshot of queue depth and cluster capacity.
     /// </summary>
-    /// <param name="WaitingCount">Jobs accepted but not yet placed on a node.</param>
-    /// <param name="RunningCount">Jobs currently placed on a node.</param>
-    /// <param name="QueuedWork">Total <see cref="JobSize"/> of everything still waiting.</param>
+    /// <param name="WaitingCount">Jobs in the global queue, not yet assigned to a node.</param>
+    /// <param name="RunningCount">Jobs currently executing on a node.</param>
+    /// <param name="QueuedWork">Total <see cref="JobSize"/> of everything not yet running.</param>
     /// <param name="TotalCapacity">Sum of maximum capacity across all known nodes.</param>
     /// <param name="AvailableCapacity">Unused capacity across nodes eligible to accept work.</param>
     /// <param name="Nodes">Per-node detail, most available first.</param>
+    /// <param name="QueuedCount">Jobs assigned to a node's queue, awaiting its capacity.</param>
     public sealed record QueueStatus(
         int WaitingCount,
         int RunningCount,
         JobSize QueuedWork,
         JobSize TotalCapacity,
         JobSize AvailableCapacity,
-        ImmutableArray<NodeStatus> Nodes) : IJobTrackerQueryResponse;
+        ImmutableArray<NodeStatus> Nodes,
+        int QueuedCount) : IJobTrackerQueryResponse;
 }
 
 /// <summary>

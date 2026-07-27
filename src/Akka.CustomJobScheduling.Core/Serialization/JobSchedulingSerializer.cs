@@ -51,6 +51,7 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
         JobTrackerEvents.NodeRemoved => NodeRemoved,
         JobTrackerEvents.NodeStatusChanged => NodeStatusChanged,
         JobTrackerEvents.JobAccepted => JobAccepted,
+        JobTrackerEvents.JobQueued => JobQueued,
         JobTrackerEvents.JobScheduled => JobScheduled,
         JobTrackerEvents.JobProgressed => JobProgressed,
         JobTrackerEvents.JobCompleted => JobCompleted,
@@ -158,6 +159,13 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 w.WriteArrayHeader(3);
                 Write(ref w, e.Job);
                 Write(ref w, e.SubmitterId);
+                Write(ref w, e.OccurredAt);
+                break;
+
+            case JobTrackerEvents.JobQueued e:
+                w.WriteArrayHeader(3);
+                Write(ref w, e.Id);
+                Write(ref w, e.NodeAddress);
                 Write(ref w, e.OccurredAt);
                 break;
 
@@ -366,7 +374,7 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 break;
 
             case JobTrackerQueryResponses.QueueStatus q:
-                w.WriteArrayHeader(6);
+                w.WriteArrayHeader(7);
                 w.Write(q.WaitingCount);
                 w.Write(q.RunningCount);
                 Write(ref w, q.QueuedWork);
@@ -378,6 +386,7 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                     Write(ref w, node);
                 }
 
+                w.Write(q.QueuedCount);
                 break;
 
             // ---- notifications ----
@@ -478,6 +487,15 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 var at = ReadTimestamp(ref r);
                 Skip(ref r, fields, 3);
                 return new JobTrackerEvents.JobAccepted(job, submitter, at);
+            }
+
+            case JobQueued:
+            {
+                var id = ReadJobId(ref r);
+                var address = ReadAddress(ref r);
+                var at = ReadTimestamp(ref r);
+                Skip(ref r, fields, 3);
+                return new JobTrackerEvents.JobQueued(id, address, at);
             }
 
             case JobScheduled:
@@ -760,9 +778,15 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                     nodes.Add(ReadNodeStatus(ref r));
                 }
 
-                Skip(ref r, fields, 6);
+                // QueuedCount was appended after the first release; a sender on the old schema
+                // stops at six fields.
+                var queuedCount = 0;
+                if (fields > 6)
+                    queuedCount = r.ReadInt32();
+
+                Skip(ref r, fields, 7);
                 return new JobTrackerQueryResponses.QueueStatus(
-                    waiting, running, queued, total, available, nodes.ToImmutable());
+                    waiting, running, queued, total, available, nodes.ToImmutable(), queuedCount);
             }
 
             case JobStatusChanged:
