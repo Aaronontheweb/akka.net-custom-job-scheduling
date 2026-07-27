@@ -521,6 +521,69 @@ public class JobTrackerStateTests
     }
 
     [Fact]
+    public void Job_listing_puts_active_work_first_then_newest_submitted()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+
+        // Submitted oldest to newest, one second apart so ordering is unambiguous.
+        tracker.Send(new SubmitJob(Job("first", 40), Submitter), Now);
+        tracker.Send(new SubmitJob(Job("second", 40), Submitter), Now.AddSeconds(1));
+        tracker.Send(new SubmitJob(Job("third", 90), Submitter), Now.AddSeconds(2));
+
+        // Finish the oldest: it should drop below everything still active, not stay at the top.
+        tracker.Send(
+            new ReportJobCompleted(new JobId("first"), Node("node-a")),
+            Now.AddSeconds(3));
+
+        var listed = tracker.State.GetJobs().Jobs.Select(job => job.Id.Value).ToArray();
+
+        Assert.Equal(["third", "second", "first"], listed);
+    }
+
+    [Fact]
+    public void Progress_does_not_disturb_the_listing_order()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("older", 40), Submitter), Now);
+        tracker.Send(new SubmitJob(Job("newer", 40), Submitter), Now.AddSeconds(1));
+
+        var before = tracker.State.GetJobs().Jobs.Select(job => job.Id.Value).ToArray();
+
+        // The whole point of ordering by submission: a progress report moves LastUpdatedAt but
+        // must not reshuffle the list, which is what made the dashboard unreadable.
+        tracker.Send(
+            new ReportProgress(
+                new JobId("older"),
+                Node("node-a"),
+                new WorkProgress(new JobSize(30), new JobSize(40))),
+            Now.AddSeconds(9));
+
+        Assert.Equal(before, tracker.State.GetJobs().Jobs.Select(job => job.Id.Value).ToArray());
+    }
+
+    [Fact]
+    public void Start_time_is_recorded_on_placement_and_cleared_by_a_requeue()
+    {
+        var tracker = new Tracker();
+        tracker.Send(Joining("node-a", 100));
+        tracker.Send(new SubmitJob(Job("job-1", 60), Submitter), Now);
+
+        var running = tracker.Job("job-1");
+        Assert.Equal(Now, running.SubmittedAt);
+        Assert.Equal(Now, running.StartedAt);
+
+        // A requeue restarts the work elsewhere, so the clock restarts with it — keeping the
+        // original start would report a duration spent on a node that no longer exists.
+        tracker.Send(new NodeLeft(Node("node-a")), Now.AddSeconds(5));
+
+        var requeued = tracker.Job("job-1");
+        Assert.Null(requeued.StartedAt);
+        Assert.Equal(Now, requeued.SubmittedAt);
+    }
+
+    [Fact]
     public void The_notification_pushed_to_subscribers_carries_the_submitter_for_shard_routing()
     {
         var tracker = new Tracker();

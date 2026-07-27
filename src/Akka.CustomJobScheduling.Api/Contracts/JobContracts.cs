@@ -18,6 +18,8 @@ namespace Akka.CustomJobScheduling.Api.Contracts;
 public sealed record SubmitJobRequest(string? Id, uint Size, string? SubmitterId);
 
 /// <summary>A job's current state.</summary>
+/// <param name="SubmittedAt">Never moves; what the dashboard orders by.</param>
+/// <param name="StartedAt">When it was last placed on a node, or null while queued.</param>
 public sealed record JobStatusResponse(
     string Id,
     string SubmitterId,
@@ -26,19 +28,25 @@ public sealed record JobStatusResponse(
     uint Total,
     decimal Fraction,
     string? AssignedNode,
-    DateTimeOffset LastUpdatedAt)
+    DateTimeOffset LastUpdatedAt,
+    DateTimeOffset SubmittedAt,
+    DateTimeOffset? StartedAt)
 {
     public static JobStatusResponse From(JobTrackerQueryResponses.JobStatusResult result) =>
-        Create(result.Id, result.SubmitterId, result.Progress, result.AssignedNode);
+        Create(result.Id, result.SubmitterId, result.Progress, result.AssignedNode,
+            result.SubmittedAt, result.StartedAt);
 
     public static JobStatusResponse From(JobTrackerNotifications.JobStatusChanged status) =>
-        Create(status.Id, status.SubmitterId, status.Progress, status.AssignedNode);
+        Create(status.Id, status.SubmitterId, status.Progress, status.AssignedNode,
+            status.SubmittedAt, status.StartedAt);
 
     private static JobStatusResponse Create(
         JobId id,
         JobSubmitterId submitterId,
         JobProgress progress,
-        Actor.Address? assignedNode) =>
+        Actor.Address? assignedNode,
+        DateTimeOffset submittedAt,
+        DateTimeOffset? startedAt) =>
         new(
             id.Value,
             submitterId.Value,
@@ -47,7 +55,9 @@ public sealed record JobStatusResponse(
             progress.Progress.Total.Size,
             progress.Progress.Fraction,
             assignedNode?.ToString(),
-            progress.LastUpdatedAt);
+            progress.LastUpdatedAt,
+            submittedAt,
+            startedAt);
 }
 
 /// <summary>A node's capacity as the tracker currently sees it.</summary>

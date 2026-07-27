@@ -99,6 +99,9 @@ public sealed class JobExecutorActor : ReceiveActor
         var amount = _pacer.TickSize(_job);
         var token = _shutdown.Token;
 
+        DoWork().PipeTo(Self);
+        return;
+
         async Task<object> DoWork()
         {
             try
@@ -114,7 +117,5 @@ public sealed class JobExecutorActor : ReceiveActor
                 return new WorkFailed("Execution cancelled.");
             }
         }
-
-        DoWork().PipeTo(Self);
     }
 }

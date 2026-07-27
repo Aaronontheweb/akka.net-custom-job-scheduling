@@ -12,13 +12,25 @@ namespace Akka.CustomJobScheduling.Core.JobTracker;
 /// <see cref="JobTrackerState"/>, so the rules about what a transition does to progress and node
 /// assignment live next to the data they change.
 /// </remarks>
+/// <param name="SubmittedAt">
+/// When the job was accepted. Unlike <paramref name="LastUpdatedAt"/> this never moves, which makes
+/// it the only stable key to order a job list by — sorting on last-updated makes rows jump around on
+/// every progress tick.
+/// </param>
+/// <param name="StartedAt">
+/// When the job was most recently placed on a node, or <c>null</c> while it waits. Reset by a
+/// requeue, because the work starts over on the new node — carrying the original start time would
+/// report a run duration that includes time spent on a node that no longer exists.
+/// </param>
 public sealed record TrackedJob(
     JobDefinition Definition,
     JobSubmitterId SubmitterId,
     JobStatus Status,
     WorkProgress Progress,
     Address? AssignedNode,
-    DateTimeOffset LastUpdatedAt) : IJobTrackerDomain, IWithJobId, IWithJobSubmitterId
+    DateTimeOffset LastUpdatedAt,
+    DateTimeOffset SubmittedAt,
+    DateTimeOffset? StartedAt) : IJobTrackerDomain, IWithJobId, IWithJobSubmitterId
 {
     public JobId Id => Definition.Id;
 
@@ -42,10 +54,18 @@ public sealed record TrackedJob(
             JobStatus.Waiting,
             WorkProgress.None(definition.Size),
             AssignedNode: null,
-            acceptedAt);
+            acceptedAt,
+            acceptedAt,
+            StartedAt: null);
 
     public TrackedJob RunOn(Address node, DateTimeOffset at) =>
-        this with { Status = JobStatus.Running, AssignedNode = node, LastUpdatedAt = at };
+        this with
+        {
+            Status = JobStatus.Running,
+            AssignedNode = node,
+            LastUpdatedAt = at,
+            StartedAt = at
+        };
 
     public TrackedJob WithProgress(WorkProgress progress, DateTimeOffset at) =>
         this with { Progress = progress, LastUpdatedAt = at };
@@ -69,7 +89,8 @@ public sealed record TrackedJob(
             Status = JobStatus.Waiting,
             Progress = WorkProgress.None(Size),
             AssignedNode = null,
-            LastUpdatedAt = at
+            LastUpdatedAt = at,
+            StartedAt = null
         };
 
     private TrackedJob Finish(JobStatus status, WorkProgress progress, DateTimeOffset at) =>
@@ -85,9 +106,9 @@ public sealed record TrackedJob(
     public JobProgress ToProgress() => new(Id, Status, Progress, LastUpdatedAt);
 
     public JobTrackerQueryResponses.JobStatusResult ToStatusResult() =>
-        new(Id, SubmitterId, ToProgress(), AssignedNode);
+        new(Id, SubmitterId, ToProgress(), AssignedNode, SubmittedAt, StartedAt);
 
     /// <summary>The shape subscribers and the submitter's shard region see.</summary>
     public JobTrackerNotifications.JobStatusChanged ToNotification() =>
-        new(Id, SubmitterId, ToProgress(), AssignedNode);
+        new(Id, SubmitterId, ToProgress(), AssignedNode, SubmittedAt, StartedAt);
 }

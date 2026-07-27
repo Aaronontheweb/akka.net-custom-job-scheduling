@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Immutable;
 using Akka.Actor;
 using Akka.Cluster;
@@ -7,6 +8,7 @@ using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
 using Akka.Serialization;
+using MessagePack;
 using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
@@ -74,10 +76,10 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
         { new JobTrackerQueries.GetJobStatus(new JobId("j1")), JobSchedulingManifests.GetJobStatus },
         { JobTrackerQueries.GetQueueStatus.Instance, JobSchedulingManifests.GetQueueStatus },
         { new JobTrackerQueryResponses.JobNotFound(new JobId("j1")), JobSchedulingManifests.JobNotFound },
-        { new JobTrackerQueryResponses.JobStatusResult(new JobId("j1"), new JobSubmitterId("s1"), JobProgress("j1", JobStatus.Running), NodeA), JobSchedulingManifests.JobStatusResult },
+        { new JobTrackerQueryResponses.JobStatusResult(new JobId("j1"), new JobSubmitterId("s1"), JobProgress("j1", JobStatus.Running), NodeA, At, At), JobSchedulingManifests.JobStatusResult },
 
         // notifications
-        { new JobTrackerNotifications.JobStatusChanged(new JobId("j1"), new JobSubmitterId("s1"), JobProgress("j1", JobStatus.Completed), null), JobSchedulingManifests.JobStatusChanged },
+        { new JobTrackerNotifications.JobStatusChanged(new JobId("j1"), new JobSubmitterId("s1"), JobProgress("j1", JobStatus.Completed), null, At, null), JobSchedulingManifests.JobStatusChanged },
 
         // execution protocol
         { new ExecutionMessages.ExecuteJob(Job("j1", 40)), JobSchedulingManifests.ExecuteJob },
@@ -179,6 +181,77 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
         // The point of a snapshot: it has to be a usable starting state, not just equal data.
         Assert.Equal(new JobSize(60), restored.Nodes[NodeA].CapacityInUse);
         Assert.Equal(JobStatus.Running, restored.Jobs[new JobId("running")].Status);
+    }
+
+    [Fact]
+    public void Reads_records_written_before_a_field_was_appended()
+    {
+        // Hand-writes JobStatusResult in its original four-field shape, exactly as a process on the
+        // previous version would have — SubmittedAt and StartedAt did not exist yet.
+        //
+        // This is the append-only evolution rule under test. It matters because there is already a
+        // Redis journal in the wild holding records in the old shape; if a reader threw on a short
+        // array instead of defaulting, recovery would fail on real data.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new MessagePackWriter(buffer);
+
+        writer.WriteArrayHeader(4);
+        writer.Write("legacy-job");
+        writer.Write("legacy-submitter");
+
+        writer.WriteArrayHeader(4);                 // JobProgress
+        writer.Write("legacy-job");
+        writer.Write((int)JobStatus.Running);
+        writer.WriteArrayHeader(2);                 // WorkProgress
+        writer.Write(3u);
+        writer.Write(10u);
+        writer.Write(At.UtcTicks);
+
+        writer.Write(NodeA.ToString());             // AssignedNode
+        writer.Flush();
+
+        var serializer = new JobSchedulingSerializer((ExtendedActorSystem)Sys);
+
+        var restored = (JobTrackerQueryResponses.JobStatusResult)serializer.FromBinary(
+            buffer.WrittenSpan.ToArray(),
+            JobSchedulingManifests.JobStatusResult);
+
+        Assert.Equal(new JobId("legacy-job"), restored.Id);
+        Assert.Equal(new JobSubmitterId("legacy-submitter"), restored.SubmitterId);
+        Assert.Equal(JobStatus.Running, restored.Progress.Status);
+        Assert.Equal(NodeA, restored.AssignedNode);
+
+        // The appended fields fall back rather than throwing.
+        Assert.Equal(At, restored.SubmittedAt);
+        Assert.Null(restored.StartedAt);
+    }
+
+    [Fact]
+    public void Tolerates_records_written_by_a_newer_schema()
+    {
+        // The other direction: a future version appends a fifth field to JobDefinition. An older
+        // reader must skip what it doesn't understand rather than choke.
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new MessagePackWriter(buffer);
+
+        writer.WriteArrayHeader(3);                 // ExecuteJob, but with a longer JobDefinition
+        writer.WriteArrayHeader(4);
+        writer.Write("future-job");
+        writer.Write(42u);
+        writer.Write("something-added-later");
+        writer.Write(7);
+        writer.WriteNil();                          // two trailing fields we know nothing about
+        writer.WriteNil();
+        writer.Flush();
+
+        var serializer = new JobSchedulingSerializer((ExtendedActorSystem)Sys);
+
+        var restored = (ExecutionMessages.ExecuteJob)serializer.FromBinary(
+            buffer.WrittenSpan.ToArray(),
+            JobSchedulingManifests.ExecuteJob);
+
+        Assert.Equal(new JobId("future-job"), restored.Job.Id);
+        Assert.Equal(new JobSize(42), restored.Job.Size);
     }
 
     [Fact]

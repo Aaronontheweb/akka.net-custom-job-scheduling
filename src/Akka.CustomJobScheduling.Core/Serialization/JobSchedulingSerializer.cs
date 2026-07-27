@@ -328,11 +328,13 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
 
             // ---- query responses ----
             case JobTrackerQueryResponses.JobStatusResult q:
-                w.WriteArrayHeader(4);
+                w.WriteArrayHeader(6);
                 Write(ref w, q.Id);
                 Write(ref w, q.SubmitterId);
                 Write(ref w, q.Progress);
                 Write(ref w, q.AssignedNode);
+                Write(ref w, q.SubmittedAt);
+                Write(ref w, q.StartedAt);
                 break;
 
             case JobTrackerQueryResponses.JobNotFound q:
@@ -380,11 +382,13 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
 
             // ---- notifications ----
             case JobTrackerNotifications.JobStatusChanged n:
-                w.WriteArrayHeader(4);
+                w.WriteArrayHeader(6);
                 Write(ref w, n.Id);
                 Write(ref w, n.SubmitterId);
                 Write(ref w, n.Progress);
                 Write(ref w, n.AssignedNode);
+                Write(ref w, n.SubmittedAt);
+                Write(ref w, n.StartedAt);
                 break;
 
             // ---- execution protocol ----
@@ -703,8 +707,19 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 var submitter = ReadSubmitterId(ref r);
                 var progress = ReadJobProgress(ref r);
                 var assigned = ReadAddressOrNull(ref r);
-                Skip(ref r, fields, 4);
-                return new JobTrackerQueryResponses.JobStatusResult(id, submitter, progress, assigned);
+
+                // Appended after the first release; a sender on the old schema stops at four.
+                var submittedAt = progress.LastUpdatedAt;
+                if (fields > 4)
+                    submittedAt = ReadTimestamp(ref r);
+
+                DateTimeOffset? startedAt = null;
+                if (fields > 5)
+                    startedAt = ReadTimestampOrNull(ref r);
+
+                Skip(ref r, fields, 6);
+                return new JobTrackerQueryResponses.JobStatusResult(
+                    id, submitter, progress, assigned, submittedAt, startedAt);
             }
 
             case JobNotFound:
@@ -756,8 +771,18 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
                 var submitter = ReadSubmitterId(ref r);
                 var progress = ReadJobProgress(ref r);
                 var assigned = ReadAddressOrNull(ref r);
-                Skip(ref r, fields, 4);
-                return new JobTrackerNotifications.JobStatusChanged(id, submitter, progress, assigned);
+
+                var submittedAt = progress.LastUpdatedAt;
+                if (fields > 4)
+                    submittedAt = ReadTimestamp(ref r);
+
+                DateTimeOffset? startedAt = null;
+                if (fields > 5)
+                    startedAt = ReadTimestampOrNull(ref r);
+
+                Skip(ref r, fields, 6);
+                return new JobTrackerNotifications.JobStatusChanged(
+                    id, submitter, progress, assigned, submittedAt, startedAt);
             }
 
             case ExecuteJob:

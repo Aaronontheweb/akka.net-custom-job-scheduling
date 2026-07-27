@@ -604,15 +604,21 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
     /// <summary>Answers <see cref="JobTrackerQueries.GetJobs"/>.</summary>
     /// <remarks>
-    /// Ordered by most recent activity so a dashboard shows what's moving, and capped so a
-    /// long-running tracker with a large history can't return an unbounded page.
+    /// Active work first, then finished, each newest-submitted first. Capped so a long-running
+    /// tracker with a large history can't return an unbounded page.
+    ///
+    /// Deliberately not ordered by last-updated: that moves on every progress tick, so a list
+    /// sorted by it reshuffles constantly and is impossible to follow. Submission time never moves,
+    /// so a row only changes position when a new job arrives or when it finishes and drops into the
+    /// lower group.
     /// </remarks>
     public JobTrackerQueryResponses.JobList GetJobs(bool includeFinished = true, int limit = 200)
     {
         var matching = Jobs.Values.Where(job => includeFinished || !job.IsTerminal).ToList();
 
         var page = matching
-            .OrderByDescending(job => job.LastUpdatedAt)
+            .OrderBy(job => job.IsTerminal)
+            .ThenByDescending(job => job.SubmittedAt)
             .ThenBy(job => job.Id.Value, StringComparer.Ordinal)
             .Take(Math.Max(0, limit))
             .Select(job => job.ToStatusResult())

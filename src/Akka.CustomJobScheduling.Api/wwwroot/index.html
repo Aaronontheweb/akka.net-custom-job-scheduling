@@ -63,7 +63,14 @@
   .mini { width: 90px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
   .mini > i { display: block; height: 100%; background: currentColor; transition: width .3s; }
   .num { font-variant-numeric: tabular-nums; }
-  form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  form { display: flex; gap: 14px; flex-wrap: wrap; align-items: flex-end; }
+  label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--dim); font-weight: 600;
+  }
+  .hint { text-transform: none; letter-spacing: 0; font-weight: 400; opacity: .7; }
+  #err { color: var(--bad); font-size: 12px; align-self: center; }
   input, button {
     font: inherit; padding: 6px 10px; border-radius: 6px;
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
@@ -97,10 +104,14 @@
     <h2>Submit</h2>
     <div class="pad">
       <form id="submit">
-        <input id="size" type="number" min="1" max="100" value="20" title="work units">
-        <input id="submitter" type="text" value="dashboard" title="submitter id">
+        <label>Job name <span class="hint">optional</span>
+          <input id="name" type="text" placeholder="auto-generated"></label>
+        <label>Size <span class="hint">work units</span>
+          <input id="size" type="number" min="1" max="100" value="20"></label>
+        <label>Submitter
+          <input id="submitter" type="text" value="dashboard"></label>
         <button type="submit">Submit job</button>
-        <span id="err" style="color:var(--bad);font-size:12px"></span>
+        <span id="err"></span>
       </form>
     </div>
   </section>
@@ -110,7 +121,7 @@
     <div class="scroll">
       <table>
         <thead><tr>
-          <th>Job</th><th>Submitter</th><th>Status</th><th>Progress</th><th>Node</th>
+          <th>Job</th><th>Submitter</th><th>Status</th><th>Progress</th><th>Duration</th><th>Node</th>
         </tr></thead>
         <tbody id="jobs"></tbody>
       </table>
@@ -144,8 +155,33 @@ function renderQueue(q) {
   }).join('') : '<div class="empty">no worker nodes</div>';
 }
 
+const TERMINAL = new Set(['Completed', 'Faulted', 'Cancelled']);
+
+// Elapsed run time. A finished job froze at lastUpdatedAt; a running one is still going, so it
+// ticks against the wall clock.
+function duration(j) {
+  if (!j.startedAt) return null;
+  const from = Date.parse(j.startedAt);
+  const to = TERMINAL.has(j.status) ? Date.parse(j.lastUpdatedAt) : Date.now();
+  return Math.max(0, to - from);
+}
+
+function formatDuration(ms) {
+  if (ms === null) return '<span style="color:var(--dim)">—</span>';
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+}
+
 function renderJobs() {
-  const rows = [...jobs.values()].sort((a, b) => b.lastUpdatedAt.localeCompare(a.lastUpdatedAt));
+  // Active work first, then finished, each newest-submitted first. Submission time never moves, so
+  // a row only changes position when a new job arrives or when this one finishes — never on a
+  // progress tick.
+  const rows = [...jobs.values()].sort((a, b) =>
+    (TERMINAL.has(a.status) - TERMINAL.has(b.status)) ||
+    b.submittedAt.localeCompare(a.submittedAt) ||
+    a.id.localeCompare(b.id));
   el('noJobs').style.display = rows.length ? 'none' : '';
   el('jobs').innerHTML = rows.map(j => `<tr>
     <td><code>${esc(j.id)}</code></td>
@@ -157,9 +193,14 @@ function renderJobs() {
         <span class="num" style="color:var(--text)">${(j.fraction * 100).toFixed(0)}%</span>
       </div>
     </td>
+    <td class="num" style="color:var(--dim)">${formatDuration(duration(j))}</td>
     <td>${shortNode(j.assignedNode)}</td>
   </tr>`).join('');
 }
+
+// Running jobs' durations tick against the wall clock, so redraw on a slow timer. Purely cosmetic —
+// all state still arrives over the stream.
+setInterval(() => { if ([...jobs.values()].some(j => !TERMINAL.has(j.status))) renderJobs(); }, 1000);
 
 function connect() {
   const src = new EventSource('/cluster/events');
@@ -197,10 +238,12 @@ el('submit').addEventListener('submit', async e => {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
+      id: el('name').value || null,
       size: Number(el('size').value),
       submitterId: el('submitter').value || 'dashboard'
     })
   });
+  if (res.ok) el('name').value = '';
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     el('err').textContent = `${res.status}: ${body.error ?? 'rejected'}`;

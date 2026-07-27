@@ -63,11 +63,14 @@ public static class JobTrackerQueries
 /// </summary>
 public static class JobTrackerQueryResponses
 {
+    /// <param name="SubmittedAt">Fixed at acceptance; the stable key for ordering a job list.</param>
     public sealed record JobStatusResult(
         JobId Id,
         JobSubmitterId SubmitterId,
         JobProgress Progress,
-        Address? AssignedNode) : IJobTrackerQueryResponse, IWithJobId, IWithJobSubmitterId;
+        Address? AssignedNode,
+        DateTimeOffset SubmittedAt,
+        DateTimeOffset? StartedAt) : IJobTrackerQueryResponse, IWithJobId, IWithJobSubmitterId;
 
     public sealed record JobNotFound(JobId Id) : IJobTrackerQueryResponse, IWithJobId;
 
@@ -121,5 +124,7 @@ public static class JobTrackerNotifications
         JobId Id,
         JobSubmitterId SubmitterId,
         JobProgress Progress,
-        Address? AssignedNode) : IJobTrackerNotification, IWithJobId, IWithJobSubmitterId;
+        Address? AssignedNode,
+        DateTimeOffset SubmittedAt,
+        DateTimeOffset? StartedAt) : IJobTrackerNotification, IWithJobId, IWithJobSubmitterId;
 }

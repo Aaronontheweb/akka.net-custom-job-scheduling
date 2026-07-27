@@ -43,6 +43,8 @@ JobSubmitterActor  shard entity per submitter; receives progress
 
 The API serves a dashboard at `/` — cluster capacity, per-node utilisation bars, a live job table, and a submit box. It's a single static file with no build step and no framework, driven entirely by the `/cluster/events` stream: one snapshot on connect, then a frame per transition. Nothing polls.
 
+Jobs are listed active-first, then finished, each newest-submitted first. Ordering is by `SubmittedAt`, which never moves — sorting on last-updated makes rows reshuffle on every progress tick. A row therefore only changes position when a new job arrives or when it finishes and drops into the lower group. `StartedAt` is recorded on placement and cleared by a requeue, so the duration column reports time on the current node rather than including a run that was abandoned elsewhere.
+
 ## API
 
 | | | |

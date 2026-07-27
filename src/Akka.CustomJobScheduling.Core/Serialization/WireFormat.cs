@@ -49,6 +49,25 @@ internal static class WireFormat
     public static DateTimeOffset ReadTimestamp(ref MessagePackReader r) =>
         new(r.ReadInt64(), TimeSpan.Zero);
 
+    public static void Write(ref MessagePackWriter w, DateTimeOffset? value)
+    {
+        if (value is null)
+        {
+            w.WriteNil();
+            return;
+        }
+
+        Write(ref w, value.Value);
+    }
+
+    public static DateTimeOffset? ReadTimestampOrNull(ref MessagePackReader r)
+    {
+        if (r.TryReadNil())
+            return null;
+
+        return ReadTimestamp(ref r);
+    }
+
     public static void Write(ref MessagePackWriter w, Address? value) => w.Write(value?.ToString());
 
     public static Address? ReadAddressOrNull(ref MessagePackReader r)
@@ -166,13 +185,15 @@ internal static class WireFormat
 
     public static void Write(ref MessagePackWriter w, TrackedJob value)
     {
-        w.WriteArrayHeader(6);
+        w.WriteArrayHeader(8);
         Write(ref w, value.Definition);
         Write(ref w, value.SubmitterId);
         Write(ref w, value.Status);
         Write(ref w, value.Progress);
         Write(ref w, value.AssignedNode);
         Write(ref w, value.LastUpdatedAt);
+        Write(ref w, value.SubmittedAt);
+        Write(ref w, value.StartedAt);
     }
 
     public static TrackedJob ReadTrackedJob(ref MessagePackReader r)
@@ -184,9 +205,21 @@ internal static class WireFormat
         var progress = ReadWorkProgress(ref r);
         var assigned = ReadAddressOrNull(ref r);
         var updatedAt = ReadTimestamp(ref r);
-        Skip(ref r, fields, 6);
 
-        return new TrackedJob(definition, submitter, status, progress, assigned, updatedAt);
+        // SubmittedAt and StartedAt were appended after the first release, so snapshots already in
+        // the journal stop at six fields. Last-updated is the closest thing those records carry.
+        var submittedAt = updatedAt;
+        if (fields > 6)
+            submittedAt = ReadTimestamp(ref r);
+
+        DateTimeOffset? startedAt = null;
+        if (fields > 7)
+            startedAt = ReadTimestampOrNull(ref r);
+
+        Skip(ref r, fields, 8);
+
+        return new TrackedJob(
+            definition, submitter, status, progress, assigned, updatedAt, submittedAt, startedAt);
     }
 
     /// <summary>
