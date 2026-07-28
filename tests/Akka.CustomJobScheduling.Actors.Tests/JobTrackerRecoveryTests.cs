@@ -23,12 +23,16 @@ public class JobTrackerRecoveryTests : JobSchedulingTestKit
     /// <summary>
     /// Kills the tracker and stands up a replacement on the same persistence id.
     /// </summary>
-    private async Task<IActorRef> RestartTrackerAsync()
+    private async Task<IActorRef> RestartTrackerAsync(Action? whileDown = null)
     {
         var original = Tracker;
         await WatchAsync(original);
         original.Tell(PoisonPill.Instance);
         await ExpectTerminatedAsync(original);
+
+        // The old tracker has unsubscribed from membership by now, so anything the test does here
+        // happens while nothing is listening - exactly how a change "while the tracker was down" looks.
+        whileDown?.Invoke();
 
         var replacement = Sys.ActorOf(
             Props.Create(() => new JobTrackerActor(
@@ -39,6 +43,34 @@ public class JobTrackerRecoveryTests : JobSchedulingTestKit
             $"job-tracker-{Guid.NewGuid():N}");
 
         return replacement;
+    }
+
+    [Fact]
+    public async Task A_node_that_healed_while_the_tracker_was_down_becomes_reachable_again()
+    {
+        Membership.MemberUp("node-a", 100);
+        Membership.MemberUp("node-b", 100);
+
+        // node-a goes unreachable; the tracker records that (and stops routing new work to it).
+        Membership.Unreachable("node-a");
+        await AwaitAssertAsync(async () => Assert.False(await ReachableAsync(Tracker, "node-a")));
+
+        // The partition heals while the tracker is down, so the ReachableMember event reaches no
+        // tracker - the post-failover reconciliation gap. On resubscribe the source reports node-a as
+        // a reachable member and the tracker corrects the stale flag rather than sidelining a healthy
+        // node forever.
+        var restarted = await RestartTrackerAsync(() => Membership.Reachable("node-a"));
+
+        await AwaitAssertAsync(async () => Assert.True(await ReachableAsync(restarted, "node-a")));
+    }
+
+    private async Task<bool> ReachableAsync(IActorRef tracker, string host)
+    {
+        var queue = await tracker.Ask<JobTrackerQueryResponses.QueueStatus>(
+            JobTrackerQueries.GetQueueStatus.Instance,
+            RemainingOrDefault);
+
+        return queue.Nodes.Single(node => node.NodeAddress == NodeAddress(host)).Reachable;
     }
 
     [Fact]
