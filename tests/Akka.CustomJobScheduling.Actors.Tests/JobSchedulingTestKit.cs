@@ -9,7 +9,6 @@ using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
 
