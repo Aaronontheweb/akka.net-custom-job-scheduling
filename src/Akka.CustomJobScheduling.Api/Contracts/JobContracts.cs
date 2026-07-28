@@ -122,9 +122,7 @@ public static class RejectionMapping
         JobRejectionReason.UnknownJob => StatusCodes.Status404NotFound,
         JobRejectionReason.AlreadyTerminal => StatusCodes.Status409Conflict,
         JobRejectionReason.NotSubmitter => StatusCodes.Status403Forbidden,
-        JobRejectionReason.ExceedsClusterCapacity => StatusCodes.Status422UnprocessableEntity,
 
-        // Only ever produced by worker reports, which never originate from HTTP.
         _ => StatusCodes.Status400BadRequest
     };
 }

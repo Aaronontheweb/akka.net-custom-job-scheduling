@@ -83,14 +83,16 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
         // commands
         JobTrackerCommands.SubmitJob => SubmitJob,
         JobTrackerCommands.CancelJob => CancelJob,
-        JobTrackerCommands.ReportProgress => ReportProgress,
-        JobTrackerCommands.ReportJobCompleted => ReportJobCompleted,
-        JobTrackerCommands.ReportJobFailed => ReportJobFailed,
-        JobTrackerCommands.NodeJoined => NodeJoined,
-        JobTrackerCommands.NodeLeft => NodeLeft,
-        JobTrackerCommands.NodeReachabilityChanged => NodeReachabilityChanged,
-        JobTrackerCommands.SyncNodes => SyncNodes,
-        JobTrackerCommands.DrainQueue => DrainQueue,
+
+        // facts
+        JobTrackerFacts.ProgressReported => ProgressReported,
+        JobTrackerFacts.ExecutionCompleted => ExecutionCompleted,
+        JobTrackerFacts.ExecutionFailed => ExecutionFailed,
+        JobTrackerFacts.NodeJoined => NodeJoined,
+        JobTrackerFacts.NodeLeft => NodeLeft,
+        JobTrackerFacts.NodeReachabilityChanged => NodeReachabilityChanged,
+        JobTrackerFacts.NodesSynced => NodesSynced,
+        JobTrackerFacts.DrainQueue => DrainQueue,
 
         // command responses
         JobTrackerResponses.CommandAccepted => CommandAccepted,
@@ -156,14 +158,14 @@ public sealed class JobSchedulingSerializer : SerializerWithStringManifest
 
         SubmitJob => typeof(JobTrackerCommands.SubmitJob),
         CancelJob => typeof(JobTrackerCommands.CancelJob),
-        ReportProgress => typeof(JobTrackerCommands.ReportProgress),
-        ReportJobCompleted => typeof(JobTrackerCommands.ReportJobCompleted),
-        ReportJobFailed => typeof(JobTrackerCommands.ReportJobFailed),
-        NodeJoined => typeof(JobTrackerCommands.NodeJoined),
-        NodeLeft => typeof(JobTrackerCommands.NodeLeft),
-        NodeReachabilityChanged => typeof(JobTrackerCommands.NodeReachabilityChanged),
-        SyncNodes => typeof(JobTrackerCommands.SyncNodes),
-        DrainQueue => typeof(JobTrackerCommands.DrainQueue),
+        ProgressReported => typeof(JobTrackerFacts.ProgressReported),
+        ExecutionCompleted => typeof(JobTrackerFacts.ExecutionCompleted),
+        ExecutionFailed => typeof(JobTrackerFacts.ExecutionFailed),
+        NodeJoined => typeof(JobTrackerFacts.NodeJoined),
+        NodeLeft => typeof(JobTrackerFacts.NodeLeft),
+        NodeReachabilityChanged => typeof(JobTrackerFacts.NodeReachabilityChanged),
+        NodesSynced => typeof(JobTrackerFacts.NodesSynced),
+        DrainQueue => typeof(JobTrackerFacts.DrainQueue),
 
         CommandAccepted => typeof(JobTrackerResponses.CommandAccepted),
         CommandRejected => typeof(JobTrackerResponses.CommandRejected),

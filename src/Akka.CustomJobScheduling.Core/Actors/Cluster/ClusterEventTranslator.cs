@@ -8,11 +8,11 @@ using Akka.Event;
 namespace Akka.CustomJobScheduling.Core.Actors.Cluster;
 
 /// <summary>
-/// Subscribes to Akka.Cluster and republishes membership changes as job tracker commands.
+/// Subscribes to Akka.Cluster and republishes membership changes as job tracker facts.
 /// </summary>
 /// <remarks>
 /// This is the only type in the codebase that knows <see cref="ClusterEvent"/> exists. Everything
-/// downstream deals in <see cref="JobTrackerCommands.NodeJoined"/> and friends.
+/// downstream deals in <see cref="JobTrackerFacts.NodeJoined"/> and friends.
 /// </remarks>
 internal sealed class ClusterEventTranslator : ReceiveActor
 {
@@ -43,7 +43,7 @@ internal sealed class ClusterEventTranslator : ReceiveActor
                 .Where(RunsWork)
                 .ToImmutableDictionary(member => member.Address, _ => _defaultCapacity);
 
-            _target.Tell(new JobTrackerCommands.SyncNodes(members));
+            _target.Tell(new JobTrackerFacts.NodesSynced(members));
 
             foreach (var unreachable in state.Unreachable)
             {
@@ -63,7 +63,7 @@ internal sealed class ClusterEventTranslator : ReceiveActor
 
             _log.Info("Node {NodeAddress} removed from cluster; its work will be requeued",
                 removed.Member.Address);
-            _target.Tell(new JobTrackerCommands.NodeLeft(removed.Member.Address));
+            _target.Tell(new JobTrackerFacts.NodeLeft(removed.Member.Address));
         });
 
         Receive<ClusterEvent.UnreachableMember>(unreachable =>
@@ -78,7 +78,7 @@ internal sealed class ClusterEventTranslator : ReceiveActor
         if (!RunsWork(member))
             return;
 
-        _target.Tell(new JobTrackerCommands.NodeJoined(
+        _target.Tell(new JobTrackerFacts.NodeJoined(
             member.Address,
             member.Status,
             _defaultCapacity));
@@ -89,7 +89,7 @@ internal sealed class ClusterEventTranslator : ReceiveActor
         if (!RunsWork(member))
             return;
 
-        _target.Tell(new JobTrackerCommands.NodeReachabilityChanged(member.Address, reachable));
+        _target.Tell(new JobTrackerFacts.NodeReachabilityChanged(member.Address, reachable));
     }
 
     /// <summary>

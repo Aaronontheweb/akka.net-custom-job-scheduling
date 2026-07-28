@@ -14,7 +14,7 @@ namespace Akka.CustomJobScheduling.Actors.Tests;
 /// proves nothing about the clustered branch of each <c>With*</c> method. This class is the
 /// counterweight: one node, self-joined, with a real cluster singleton, a real shard region, and
 /// the real cluster event translator turning <c>ClusterEvent.MemberUp</c> into
-/// <see cref="JobTrackerCommands.NodeJoined"/>.
+/// <see cref="JobTrackerFacts.NodeJoined"/>.
 /// </para>
 /// <para>
 /// Deliberately thin — enough to catch a registration branch that doesn't compose, not a second

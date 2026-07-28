@@ -59,13 +59,15 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
         // commands
         { new JobTrackerCommands.SubmitJob(Job("j1", 40), new JobSubmitterId("s1")), JobSchedulingManifests.SubmitJob },
         { new JobTrackerCommands.CancelJob(new JobId("j1"), new JobSubmitterId("s1"), "why"), JobSchedulingManifests.CancelJob },
-        { new JobTrackerCommands.ReportProgress(new JobId("j1"), NodeA, Progress(1, 4)), JobSchedulingManifests.ReportProgress },
-        { new JobTrackerCommands.ReportJobCompleted(new JobId("j1"), NodeA), JobSchedulingManifests.ReportJobCompleted },
-        { new JobTrackerCommands.ReportJobFailed(new JobId("j1"), NodeA, "nope"), JobSchedulingManifests.ReportJobFailed },
-        { new JobTrackerCommands.NodeJoined(NodeA, MemberStatus.Up, new JobSize(75)), JobSchedulingManifests.NodeJoined },
-        { new JobTrackerCommands.NodeLeft(NodeA), JobSchedulingManifests.NodeLeft },
-        { new JobTrackerCommands.NodeReachabilityChanged(NodeA, true), JobSchedulingManifests.NodeReachabilityChanged },
-        { JobTrackerCommands.DrainQueue.Instance, JobSchedulingManifests.DrainQueue },
+
+        // facts
+        { new JobTrackerFacts.ProgressReported(new JobId("j1"), NodeA, Progress(1, 4)), JobSchedulingManifests.ProgressReported },
+        { new JobTrackerFacts.ExecutionCompleted(new JobId("j1"), NodeA), JobSchedulingManifests.ExecutionCompleted },
+        { new JobTrackerFacts.ExecutionFailed(new JobId("j1"), NodeA, "nope"), JobSchedulingManifests.ExecutionFailed },
+        { new JobTrackerFacts.NodeJoined(NodeA, MemberStatus.Up, new JobSize(75)), JobSchedulingManifests.NodeJoined },
+        { new JobTrackerFacts.NodeLeft(NodeA), JobSchedulingManifests.NodeLeft },
+        { new JobTrackerFacts.NodeReachabilityChanged(NodeA, true), JobSchedulingManifests.NodeReachabilityChanged },
+        { JobTrackerFacts.DrainQueue.Instance, JobSchedulingManifests.DrainQueue },
 
         // command responses
         { new JobTrackerResponses.CommandAccepted(new JobId("j1")), JobSchedulingManifests.CommandAccepted },
@@ -104,11 +106,11 @@ public class JobSchedulingSerializerTests : Akka.Hosting.TestKit.TestKit
     [Fact]
     public void Round_trips_a_node_sync()
     {
-        var command = new JobTrackerCommands.SyncNodes(ImmutableDictionary<Address, JobSize>.Empty
+        var fact = new JobTrackerFacts.NodesSynced(ImmutableDictionary<Address, JobSize>.Empty
             .Add(NodeA, new JobSize(100))
             .Add(NodeB, new JobSize(60)));
 
-        var restored = (JobTrackerCommands.SyncNodes)RoundTrip(command);
+        var restored = (JobTrackerFacts.NodesSynced)RoundTrip(fact);
 
         Assert.Equal(new JobSize(100), restored.Members[NodeA]);
         Assert.Equal(new JobSize(60), restored.Members[NodeB]);

@@ -8,9 +8,9 @@ namespace Akka.CustomJobScheduling.Core.Actors.Cluster;
 /// <remarks>
 /// <para>
 /// This exists purely so the tracker never touches <c>Cluster.Get(system)</c>. Subscribers receive
-/// <see cref="JobTracker.JobTrackerCommands.NodeJoined"/>,
-/// <see cref="JobTracker.JobTrackerCommands.NodeLeft"/>, and
-/// <see cref="JobTracker.JobTrackerCommands.NodeReachabilityChanged"/> — all of which are already
+/// <see cref="JobTracker.JobTrackerFacts.NodeJoined"/>,
+/// <see cref="JobTracker.JobTrackerFacts.NodeLeft"/>, and
+/// <see cref="JobTracker.JobTrackerFacts.NodeReachabilityChanged"/> — all of which are already
 /// cluster-agnostic, so a fake can produce them without any Akka.Cluster infrastructure at all.
 /// </para>
 /// <para>
@@ -21,12 +21,12 @@ namespace Akka.CustomJobScheduling.Core.Actors.Cluster;
 public interface IClusterMembershipSource
 {
     /// <summary>
-    /// Begin delivering membership commands to <paramref name="subscriber"/>.
+    /// Begin delivering membership facts to <paramref name="subscriber"/>.
     /// </summary>
     void Subscribe(IActorRef subscriber);
 
     /// <summary>
-    /// Stop delivering membership commands to <paramref name="subscriber"/>.
+    /// Stop delivering membership facts to <paramref name="subscriber"/>.
     /// </summary>
     void Unsubscribe(IActorRef subscriber);
 }

@@ -9,10 +9,12 @@ namespace Akka.CustomJobScheduling.Core.JobTracker;
 /// The outcome of handing an <see cref="IJobTrackerCommand"/> to <see cref="JobTrackerState.Decide"/>:
 /// the facts to persist, and what to tell the sender.
 /// </summary>
+/// <remarks>
+/// Only commands produce one of these, because only commands can be rejected. A fact goes through
+/// <see cref="JobTrackerState.Integrate"/>, which returns bare events and has no room for a rejection.
+/// </remarks>
 /// <param name="Events">Events to persist and then fold back into the state, in order.</param>
-/// <param name="Response">
-/// The acknowledgement to send back, or <c>null</c> for internal commands nobody is waiting on.
-/// </param>
+/// <param name="Response">The acknowledgement to send back, or <c>null</c> for a no-op command.</param>
 public sealed record JobTrackerDecision(
     ImmutableArray<IJobTrackerEvent> Events,
     IJobTrackerCommandResponse? Response)
@@ -32,18 +34,6 @@ public sealed record JobTrackerDecision(
             ImmutableArray<IJobTrackerEvent>.Empty,
             new JobTrackerResponses.CommandRejected(id, reason, message));
 
-    /// <summary>
-    /// Effects with no acknowledgement — cluster topology changes, and reports from workers.
-    /// </summary>
-    /// <remarks>
-    /// Worker reports use this because the executor that sent one is usually gone by the time a
-    /// reply could reach it: <c>JobExecutorActor</c> stops itself the instant it reports completion,
-    /// and the tracker only answers after its journal write returns. Acknowledging would produce a
-    /// dead letter per finished job for a message nothing reads.
-    /// </remarks>
-    public static JobTrackerDecision Record(params IJobTrackerEvent[] events) =>
-        new([.. events], null);
-
     public JobTrackerDecision Then(ImmutableArray<IJobTrackerEvent> more)
     {
         if (more.IsEmpty)
@@ -61,21 +51,22 @@ public sealed record JobTrackerDecision(
 /// <para>
 /// Nothing in here is actor-shaped. No <see cref="IActorRef"/>, no <c>Context</c>, no
 /// <c>ActorSystem</c>, and no call to <c>DateTimeOffset.UtcNow</c>. Time arrives through the
-/// <c>now</c> parameter on <see cref="Decide"/> and is then carried by the events themselves, which
-/// is what makes recovery deterministic: replaying a journal always produces the same state, no
-/// matter when you replay it.
+/// <c>now</c> parameter and is then carried by the events themselves, which is what makes recovery
+/// deterministic: replaying a journal always produces the same state, no matter when you replay it.
 /// </para>
-/// <para>The split is:</para>
+/// <para>Three operations, and the type of the input picks which one runs:</para>
 /// <list type="bullet">
 /// <item><description>
-/// <see cref="Decide"/> — validates a command and returns the events it implies. Pure.
+/// <see cref="Decide"/> — takes an <see cref="IJobTrackerCommand"/> (a request), validates it, and
+/// returns the events it implies or a rejection. The only place "no" is a legal answer.
 /// </description></item>
 /// <item><description>
-/// <see cref="Apply"/> — folds one event into a new state. Never validates; an event is a fact.
+/// <see cref="Integrate"/> — takes an <see cref="IJobTrackerFact"/> (something that already
+/// happened), and returns the events it implies. Never rejects; a stale fact returns no events.
 /// </description></item>
 /// <item><description>
-/// The tracker <i>actor</i> — reads the clock, persists what <see cref="Decide"/> returned, folds it,
-/// replies to <c>Sender</c>, notifies subscribers. That's all it does.
+/// <see cref="Apply"/> — folds one <see cref="IJobTrackerEvent"/> into a new state. Pure, per-type,
+/// and the only thing that runs during recovery. Never produces events, never rejects.
 /// </description></item>
 /// </list>
 /// <para>
@@ -99,76 +90,48 @@ public sealed record JobTrackerState : IJobTrackerDomain
         ImmutableDictionary<Address, NodeStatus>.Empty;
 
     // ------------------------------------------------------------------
-    // Decide: command -> events
+    // Decide: command -> events (or a rejection)
     // ------------------------------------------------------------------
 
     /// <summary>
     /// Validates <paramref name="command"/> against the current state and returns the events it
-    /// implies. Does not modify this instance.
+    /// implies, or a rejection. Does not modify this instance.
     /// </summary>
     /// <param name="now">
     /// The timestamp to stamp onto resulting events. Supplied by the caller so transitions stay
     /// deterministic and testable.
     /// </param>
     /// <remarks>
-    /// Any command that succeeds also drains the queue, so placement lives in one place instead of
-    /// being scattered across the command handlers.
+    /// Two commands, and that's the whole set — everything else the tracker hears is a fact. A
+    /// command that succeeds also drains the queue, so placement lives in one place.
     /// </remarks>
     public JobTrackerDecision Decide(IJobTrackerCommand command, DateTimeOffset now)
     {
-        var decision = Evaluate(command, now);
+        var decision = command switch
+        {
+            JobTrackerCommands.SubmitJob c => OnSubmitJob(c, now),
+            JobTrackerCommands.CancelJob c => OnCancelJob(c, now),
+            _ => JobTrackerDecision.None
+        };
 
         if (decision.WasRejected)
             return decision;
 
         var placements = Fold(decision.Events).PlacePendingJobs(now);
-
         return decision.Then(placements);
     }
 
-    private JobTrackerDecision Evaluate(IJobTrackerCommand command, DateTimeOffset now) =>
-        command switch
-        {
-            JobTrackerCommands.SubmitJob c => OnSubmitJob(c, now),
-            JobTrackerCommands.CancelJob c => OnCancelJob(c, now),
-            JobTrackerCommands.ReportProgress c => OnReportProgress(c, now),
-            JobTrackerCommands.ReportJobCompleted c => OnReportJobCompleted(c, now),
-            JobTrackerCommands.ReportJobFailed c => OnReportJobFailed(c, now),
-            JobTrackerCommands.NodeJoined c => OnNodeJoined(c, now),
-            JobTrackerCommands.NodeLeft c => OnNodeLeft(c, now),
-            JobTrackerCommands.NodeReachabilityChanged c => OnNodeReachabilityChanged(c, now),
-            JobTrackerCommands.SyncNodes c => OnSyncNodes(c, now),
-
-            // Drain is handled by Decide itself — the tick exists only to trigger it.
-            _ => JobTrackerDecision.None
-        };
-
     private JobTrackerDecision OnSubmitJob(JobTrackerCommands.SubmitJob command, DateTimeOffset now)
     {
+        // A duplicate id is the only reason to refuse a submission: it's a conflict between two
+        // requests. Size is never a reason — an oversized job is accepted and placed like any other,
+        // it just runs on a whole node to itself. See SelectDispatchNode.
         if (Jobs.ContainsKey(command.Id))
             return Rejected(command.Id, JobRejectionReason.DuplicateJobId, "already submitted");
-
-        if (IsTooLargeForCluster(command.Job))
-            return Rejected(
-                command.Id,
-                JobRejectionReason.ExceedsClusterCapacity,
-                $"needs {command.Job.Size.Size} units; no node has that much total capacity");
 
         return JobTrackerDecision.Accept(
             command.Id,
             new JobTrackerEvents.JobAccepted(command.Job, command.SubmitterId, now));
-    }
-
-    /// <summary>
-    /// An empty cluster is not a rejection — nodes may still be joining. But if we know of nodes and
-    /// none is big enough, the job would queue forever, so fail fast instead.
-    /// </summary>
-    private bool IsTooLargeForCluster(JobDefinition job)
-    {
-        if (Nodes.IsEmpty)
-            return false;
-
-        return Nodes.Values.All(node => node.MaximumCapacity < job.Size);
     }
 
     private JobTrackerDecision OnCancelJob(JobTrackerCommands.CancelJob command, DateTimeOffset now)
@@ -193,119 +156,137 @@ public sealed record JobTrackerState : IJobTrackerDomain
             new JobTrackerEvents.JobCancelled(command.Id, command.Reason, now));
     }
 
-    private JobTrackerDecision OnReportProgress(
-        JobTrackerCommands.ReportProgress command,
-        DateTimeOffset now)
-    {
-        var rejection = ValidateReport(command.Id, command.NodeAddress);
-        if (rejection is not null)
-            return rejection;
+    private static JobTrackerDecision UnknownJob(JobId id) =>
+        Rejected(id, JobRejectionReason.UnknownJob, "not known to this tracker");
 
-        return JobTrackerDecision.Record(
-            new JobTrackerEvents.JobProgressed(command.Id, command.Progress, now));
+    private static JobTrackerDecision Rejected(JobId id, JobRejectionReason reason, string why) =>
+        JobTrackerDecision.Reject(id, reason, $"Job '{id.Value}' {why}.");
+
+    // ------------------------------------------------------------------
+    // Integrate: fact -> events (never a rejection)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Folds an <see cref="IJobTrackerFact"/> into the events it implies, then drains the queue.
+    /// Never rejects: a fact already happened, so the worst it can do is imply nothing.
+    /// </summary>
+    /// <remarks>
+    /// The return type is the enforcement. There is no slot for a rejection, so a stale progress
+    /// report or a duplicate node-join is simply an empty result — a silent no-op, not a "no".
+    /// </remarks>
+    public ImmutableArray<IJobTrackerEvent> Integrate(IJobTrackerFact fact, DateTimeOffset now)
+    {
+        var events = fact switch
+        {
+            JobTrackerFacts.ProgressReported f => OnProgressReported(f, now),
+            JobTrackerFacts.ExecutionCompleted f => OnExecutionCompleted(f, now),
+            JobTrackerFacts.ExecutionFailed f => OnExecutionFailed(f, now),
+            JobTrackerFacts.NodeJoined f => OnNodeJoined(f, now),
+            JobTrackerFacts.NodeLeft f => OnNodeLeft(f, now),
+            JobTrackerFacts.NodeReachabilityChanged f => OnNodeReachabilityChanged(f, now),
+            JobTrackerFacts.NodesSynced f => OnNodesSynced(f, now),
+
+            // DrainQueue (and anything unrecognised) implies no events on its own. The placement pass
+            // below is the entire reason the tick exists.
+            _ => ImmutableArray<IJobTrackerEvent>.Empty
+        };
+
+        var placements = Fold(events).PlacePendingJobs(now);
+        return events.AddRange(placements);
     }
 
-    private JobTrackerDecision OnReportJobCompleted(
-        JobTrackerCommands.ReportJobCompleted command,
+    private ImmutableArray<IJobTrackerEvent> OnProgressReported(
+        JobTrackerFacts.ProgressReported fact,
         DateTimeOffset now)
     {
-        var rejection = ValidateReport(command.Id, command.NodeAddress);
-        if (rejection is not null)
-            return rejection;
+        if (!IsCurrentReport(fact.Id, fact.NodeAddress))
+            return [];
 
-        return JobTrackerDecision.Record(
-            new JobTrackerEvents.JobCompleted(command.Id, now));
+        return [new JobTrackerEvents.JobProgressed(fact.Id, fact.Progress, now)];
     }
 
-    private JobTrackerDecision OnReportJobFailed(
-        JobTrackerCommands.ReportJobFailed command,
+    private ImmutableArray<IJobTrackerEvent> OnExecutionCompleted(
+        JobTrackerFacts.ExecutionCompleted fact,
         DateTimeOffset now)
     {
-        var rejection = ValidateReport(command.Id, command.NodeAddress);
-        if (rejection is not null)
-            return rejection;
+        if (!IsCurrentReport(fact.Id, fact.NodeAddress))
+            return [];
 
-        return JobTrackerDecision.Record(
-            new JobTrackerEvents.JobFailed(command.Id, command.Reason, now));
+        return [new JobTrackerEvents.JobCompleted(fact.Id, now)];
+    }
+
+    private ImmutableArray<IJobTrackerEvent> OnExecutionFailed(
+        JobTrackerFacts.ExecutionFailed fact,
+        DateTimeOffset now)
+    {
+        if (!IsCurrentReport(fact.Id, fact.NodeAddress))
+            return [];
+
+        return [new JobTrackerEvents.JobFailed(fact.Id, fact.Reason, now)];
     }
 
     /// <summary>
-    /// Shared guard for worker reports: returns the rejection, or <c>null</c> if the report is good.
+    /// Is this report about a job actually running on the node it came from?
     /// </summary>
     /// <remarks>
-    /// A rejection here is worth surfacing — it means an executor is reporting on a job it no longer
-    /// owns — and it is rare. A successful report is neither, which is why the handlers above answer
-    /// with <see cref="JobTrackerDecision.Record"/> rather than an acknowledgement nobody reads.
+    /// A report for an unknown job, or from a node that no longer owns the job, is stale — the job
+    /// was requeued elsewhere, or already finished. There's nobody to tell "no": the report just
+    /// implies no events. Progress is absolute, so a lost report self-corrects on the next tick;
+    /// the only thing this guards against is an old node's late report resurrecting stale state.
     /// </remarks>
-    private JobTrackerDecision? ValidateReport(JobId id, Address from)
-    {
-        if (!Jobs.TryGetValue(id, out var job))
-            return UnknownJob(id);
+    private bool IsCurrentReport(JobId id, Address from) =>
+        Jobs.TryGetValue(id, out var job) && job.IsRunningOn(from);
 
-        if (!job.IsRunningOn(from))
-            return Rejected(id, JobRejectionReason.StaleReport, $"not running on {from}");
-
-        return null;
-    }
-
-    private JobTrackerDecision OnNodeJoined(
-        JobTrackerCommands.NodeJoined command,
+    private ImmutableArray<IJobTrackerEvent> OnNodeJoined(
+        JobTrackerFacts.NodeJoined fact,
         DateTimeOffset now)
     {
-        if (!Nodes.TryGetValue(command.NodeAddress, out var existing))
-            return JobTrackerDecision.Record(
-                new JobTrackerEvents.NodeAdded(
-                    command.NodeAddress,
-                    command.Status,
-                    command.MaxCapacity,
-                    now));
+        if (!Nodes.TryGetValue(fact.NodeAddress, out var existing))
+            return [new JobTrackerEvents.NodeAdded(fact.NodeAddress, fact.Status, fact.MaxCapacity, now)];
 
-        if (existing.Status == command.Status && existing.Reachable)
-            return JobTrackerDecision.None;
+        if (existing.Status == fact.Status && existing.Reachable)
+            return [];
 
         // Already known — this is a membership transition (e.g. WeaklyUp -> Up), not a new node.
-        // Treat it as a status change so we don't discard the capacity it's already committed to.
-        return JobTrackerDecision.Record(
-            new JobTrackerEvents.NodeStatusChanged(
-                command.NodeAddress,
-                command.Status,
-                Reachable: true,
-                now));
+        // Fold it as a status change so we don't discard the capacity it's already committed to.
+        return [new JobTrackerEvents.NodeStatusChanged(fact.NodeAddress, fact.Status, Reachable: true, now)];
     }
 
-    private JobTrackerDecision OnNodeLeft(JobTrackerCommands.NodeLeft command, DateTimeOffset now)
+    private ImmutableArray<IJobTrackerEvent> OnNodeLeft(
+        JobTrackerFacts.NodeLeft fact,
+        DateTimeOffset now)
     {
-        if (!Nodes.ContainsKey(command.NodeAddress))
-            return JobTrackerDecision.None;
+        if (!Nodes.ContainsKey(fact.NodeAddress))
+            return [];
 
         // Requeue everything the node was carrying — running and queued alike — before forgetting
         // the node, so capacity accounting unwinds in the right order. JobsCommittedTo orders
         // previously-running jobs ahead of previously-queued ones, so they reschedule first.
         var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
 
-        foreach (var job in JobsCommittedTo(command.NodeAddress))
+        foreach (var job in JobsCommittedTo(fact.NodeAddress))
         {
             events.Add(new JobTrackerEvents.JobRequeued(
                 job.Id,
-                command.NodeAddress,
+                fact.NodeAddress,
                 "Node left the cluster.",
                 now));
         }
 
-        events.Add(new JobTrackerEvents.NodeRemoved(command.NodeAddress, now));
+        events.Add(new JobTrackerEvents.NodeRemoved(fact.NodeAddress, now));
 
-        return JobTrackerDecision.Record([.. events]);
+        return events.ToImmutable();
     }
 
-    private JobTrackerDecision OnNodeReachabilityChanged(
-        JobTrackerCommands.NodeReachabilityChanged command,
+    private ImmutableArray<IJobTrackerEvent> OnNodeReachabilityChanged(
+        JobTrackerFacts.NodeReachabilityChanged fact,
         DateTimeOffset now)
     {
-        if (!Nodes.TryGetValue(command.NodeAddress, out var existing))
-            return JobTrackerDecision.None;
+        if (!Nodes.TryGetValue(fact.NodeAddress, out var existing))
+            return [];
 
-        if (existing.Reachable == command.Reachable)
-            return JobTrackerDecision.None;
+        if (existing.Reachable == fact.Reachable)
+            return [];
 
         /*
          * Unreachable nodes stop receiving new work but keep the jobs they already hold. We do NOT
@@ -334,12 +315,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
          * The cost is latency: a job on an unreachable node stalls for `stable-after` before it
          * gets rescheduled. That's a knob on the downing provider, not on this state machine.
          */
-        return JobTrackerDecision.Record(
-            new JobTrackerEvents.NodeStatusChanged(
-                command.NodeAddress,
-                existing.Status,
-                command.Reachable,
-                now));
+        return [new JobTrackerEvents.NodeStatusChanged(fact.NodeAddress, existing.Status, fact.Reachable, now)];
     }
 
     /// <summary>
@@ -348,16 +324,18 @@ public sealed record JobTrackerState : IJobTrackerDomain
     /// <remarks>
     /// Needed because the tracker is persistent. Replaying the journal faithfully restores nodes
     /// that were present when the events were written; if one of them left while the tracker was
-    /// down, no <see cref="JobTrackerCommands.NodeLeft"/> is ever coming for it, and its jobs would
+    /// down, no <see cref="JobTrackerFacts.NodeLeft"/> is ever coming for it, and its jobs would
     /// stay <see cref="JobStatus.Running"/> on a node that isn't there. Removals are emitted before
     /// additions so freed capacity is available to the placement pass that follows.
     /// </remarks>
-    private JobTrackerDecision OnSyncNodes(JobTrackerCommands.SyncNodes command, DateTimeOffset now)
+    private ImmutableArray<IJobTrackerEvent> OnNodesSynced(
+        JobTrackerFacts.NodesSynced fact,
+        DateTimeOffset now)
     {
         var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
 
         var departed = Nodes.Keys
-            .Where(address => !command.Members.ContainsKey(address))
+            .Where(address => !fact.Members.ContainsKey(address))
             .OrderBy(address => address.ToString(), StringComparer.Ordinal);
 
         foreach (var address in departed)
@@ -374,7 +352,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
             events.Add(new JobTrackerEvents.NodeRemoved(address, now));
         }
 
-        var arrived = command.Members
+        var arrived = fact.Members
             .Where(member => !Nodes.ContainsKey(member.Key))
             .OrderBy(member => member.Key.ToString(), StringComparer.Ordinal);
 
@@ -383,29 +361,21 @@ public sealed record JobTrackerState : IJobTrackerDomain
             events.Add(new JobTrackerEvents.NodeAdded(address, MemberStatus.Up, capacity, now));
         }
 
-        return events.Count == 0
-            ? JobTrackerDecision.None
-            : JobTrackerDecision.Record([.. events]);
+        return events.ToImmutable();
     }
-
-    private static JobTrackerDecision UnknownJob(JobId id) =>
-        Rejected(id, JobRejectionReason.UnknownJob, "not known to this tracker");
-
-    private static JobTrackerDecision Rejected(JobId id, JobRejectionReason reason, string why) =>
-        JobTrackerDecision.Reject(id, reason, $"Job '{id.Value}' {why}.");
 
     // ------------------------------------------------------------------
     // Placement
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Walks the pending queue in order, emitting a <see cref="JobTrackerEvents.JobScheduled"/> for
-    /// each job that fits on an eligible node.
+    /// Places whatever it can from the pending queue, in two phases: dispatch every waiting job onto
+    /// a node's queue, then start the head of each node's queue that has room to run.
     /// </summary>
     /// <remarks>
-    /// Strict FIFO with head-of-line blocking: if the job at the front doesn't fit anywhere we stop
-    /// rather than skipping ahead to smaller jobs. That trades some utilization for the guarantee
-    /// that a large job can't be starved by a stream of small ones. This is the policy seam.
+    /// The two phases are what avoid head-of-line blocking. A job that needs a whole node doesn't
+    /// stall the ones behind it: it's dispatched into one node's queue while smaller jobs are steered
+    /// to other nodes and start right away.
     /// </remarks>
     public ImmutableArray<IJobTrackerEvent> PlacePendingJobs(DateTimeOffset now)
     {
@@ -422,9 +392,9 @@ public sealed record JobTrackerState : IJobTrackerDomain
     }
 
     /// <summary>
-    /// Phase 1 — drain the global queue onto per-node queues. Every waiting job is assigned to the
-    /// least-loaded eligible node big enough to hold it, so one large job can never block the queue:
-    /// it lands in a node's queue and smaller jobs are steered to other nodes.
+    /// Phase 1 — drain the global queue onto per-node queues. Every waiting job is assigned to a
+    /// node big enough to hold it (least-loaded first), or, if none is, to the roomiest node so an
+    /// oversized job still gets somewhere to run.
     /// </summary>
     private JobTrackerState Dispatch(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
     {
@@ -439,7 +409,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
             var target = projected.SelectDispatchNode(job.Definition);
             if (target is null)
-                continue; // no eligible node can ever hold it right now — leave it waiting
+                continue; // no eligible node at all right now — leave it waiting
 
             var queued = new JobTrackerEvents.JobQueued(id, target, now);
             events.Add(queued);
@@ -450,9 +420,9 @@ public sealed record JobTrackerState : IJobTrackerDomain
     }
 
     /// <summary>
-    /// Phase 2 — each node runs the head of its own queue as soon as real capacity frees up. Strict
-    /// per-node FIFO: if the head doesn't fit yet, the node waits and drains toward it rather than
-    /// running a later job past it.
+    /// Phase 2 — each node runs the head of its own queue as soon as it can. Strict per-node FIFO:
+    /// if the head doesn't fit yet, the node waits and drains toward it rather than running a later
+    /// job past it. An oversized job at the head runs alone once the node is idle.
     /// </summary>
     private JobTrackerState Run(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
     {
@@ -466,7 +436,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
                 if (head is null)
                     break;
 
-                if (!projected.Nodes.TryGetValue(address, out var node) || !node.CanAccept(head.Definition))
+                if (!projected.Nodes.TryGetValue(address, out var node) || !node.CanRun(head.Definition))
                     break;
 
                 var scheduled = new JobTrackerEvents.JobScheduled(head.Id, address, now);
@@ -479,17 +449,37 @@ public sealed record JobTrackerState : IJobTrackerDomain
     }
 
     /// <summary>
-    /// The least-loaded eligible node whose maximum capacity can hold the job, ties broken by
-    /// address. "Loaded" is running plus already-queued work, so a burst spreads across the cluster
-    /// and a node already holding a big job stops attracting more.
+    /// Which node a waiting job is dispatched to.
     /// </summary>
-    private Address? SelectDispatchNode(JobDefinition job) =>
-        Nodes.Values
-            .Where(node => node.IsEligible && node.MaximumCapacity >= job.Size)
+    /// <remarks>
+    /// First choice is the least-loaded eligible node big enough to hold the job, ties broken by
+    /// address; "loaded" is running plus already-queued work, so a burst spreads across the cluster.
+    /// If nothing is big enough, the job is oversized — it still has to run, so it goes to the
+    /// roomiest eligible node and will occupy it exclusively. <c>null</c> only when there is no
+    /// eligible node at all, in which case the job stays waiting.
+    /// </remarks>
+    private Address? SelectDispatchNode(JobDefinition job)
+    {
+        var eligible = Nodes.Values.Where(node => node.IsEligible).ToList();
+        if (eligible.Count == 0)
+            return null;
+
+        var fitting = eligible
+            .Where(node => node.MaximumCapacity >= job.Size)
             .OrderBy(CommittedLoad)
             .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
-            .Select(node => node.NodeAddress)
-            .FirstOrDefault();
+            .ToList();
+
+        if (fitting.Count > 0)
+            return fitting[0].NodeAddress;
+
+        return eligible
+            .OrderByDescending(node => node.MaximumCapacity)
+            .ThenBy(CommittedLoad)
+            .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
+            .First()
+            .NodeAddress;
+    }
 
     /// <summary>Running plus queued work committed to a node.</summary>
     private JobSize CommittedLoad(NodeStatus node) =>
@@ -625,7 +615,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
             : this;
 
         // Appended at the back of the global queue. Node-loss emits requeues running-first, and the
-        // same Decide re-dispatches the whole batch, so append order is the reschedule order — no
+        // same pass re-dispatches the whole batch, so append order is the reschedule order — no
         // front-insertion reversal to reason about. A job that can't currently be placed is simply
         // skipped by Dispatch, so it never blocks the ones behind it.
         return released

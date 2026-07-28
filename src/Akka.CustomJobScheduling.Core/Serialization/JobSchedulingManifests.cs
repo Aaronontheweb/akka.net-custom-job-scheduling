@@ -37,14 +37,16 @@ public static class JobSchedulingManifests
     // Commands — cross-node.
     public const string SubmitJob = "c:submit-job";
     public const string CancelJob = "c:cancel-job";
-    public const string ReportProgress = "c:report-progress";
-    public const string ReportJobCompleted = "c:report-completed";
-    public const string ReportJobFailed = "c:report-failed";
-    public const string NodeJoined = "c:node-joined";
-    public const string NodeLeft = "c:node-left";
-    public const string NodeReachabilityChanged = "c:node-reachability";
-    public const string SyncNodes = "c:sync-nodes";
-    public const string DrainQueue = "c:drain-queue";
+
+    // Facts — cross-node. Not journaled, so these are wire identifiers only.
+    public const string ProgressReported = "f:progress-reported";
+    public const string ExecutionCompleted = "f:execution-completed";
+    public const string ExecutionFailed = "f:execution-failed";
+    public const string NodeJoined = "f:node-joined";
+    public const string NodeLeft = "f:node-left";
+    public const string NodeReachabilityChanged = "f:node-reachability";
+    public const string NodesSynced = "f:nodes-synced";
+    public const string DrainQueue = "f:drain-queue";
 
     // Command responses.
     public const string CommandAccepted = "r:accepted";

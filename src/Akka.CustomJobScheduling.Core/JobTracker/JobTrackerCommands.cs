@@ -1,6 +1,3 @@
-using System.Collections.Immutable;
-using Akka.Actor;
-using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.Jobs;
 
 namespace Akka.CustomJobScheduling.Core.JobTracker;
@@ -8,28 +5,36 @@ namespace Akka.CustomJobScheduling.Core.JobTracker;
 /// <summary>
 /// Why a command could not be applied.
 /// </summary>
+/// <remarks>
+/// Only commands are rejected. Facts (a worker report, a node leaving) are never refused — a stale
+/// one simply produces no events — so there is no rejection reason for them here.
+/// </remarks>
 public enum JobRejectionReason
 {
     DuplicateJobId = 0,
     UnknownJob = 1,
     AlreadyTerminal = 2,
-    NotSubmitter = 3,
-
-    /// <summary>No node in the cluster is large enough to ever run this job.</summary>
-    ExceedsClusterCapacity = 4,
-
-    /// <summary>A report arrived from a node that no longer owns the job.</summary>
-    StaleReport = 5
+    NotSubmitter = 3
 }
 
 /// <summary>
-/// Commands for the job tracker.
+/// Commands for the job tracker: requests that are validated and may be rejected.
 /// </summary>
+/// <remarks>
+/// The whole set is two. Everything the tracker also hears about — progress, completions, node
+/// topology — has already happened and cannot be refused, so it lives in <see cref="JobTrackerFacts"/>
+/// as an <see cref="IJobTrackerFact"/>, not here.
+/// </remarks>
 public static class JobTrackerCommands
 {
     /// <summary>
-    /// Submit a new job. Accepted jobs enter the queue and are placed as soon as capacity exists.
+    /// Submit a new job. Accepted jobs enter the queue and are placed as soon as a node is free.
     /// </summary>
+    /// <remarks>
+    /// The only reason to reject a submission is a duplicate id — a genuine conflict between two
+    /// requests. A job larger than any node is <i>not</i> rejected: it's placed on the roomiest node
+    /// and run there exclusively. Size is an execution-time concern, not a reason to refuse work.
+    /// </remarks>
     public sealed record SubmitJob(JobDefinition Job, JobSubmitterId SubmitterId)
         : IJobTrackerCommand, IWithJobId, IWithJobSubmitterId
     {
@@ -42,77 +47,6 @@ public static class JobTrackerCommands
     /// </summary>
     public sealed record CancelJob(JobId Id, JobSubmitterId SubmitterId, string Reason)
         : IJobTrackerCommand, IWithJobId, IWithJobSubmitterId;
-
-    /// <summary>A worker node reporting how far it has gotten through a running job.</summary>
-    public sealed record ReportProgress(JobId Id, Address NodeAddress, WorkProgress Progress)
-        : IJobTrackerCommand, IWithJobId;
-
-    /// <summary>A worker node reporting that a job finished successfully.</summary>
-    public sealed record ReportJobCompleted(JobId Id, Address NodeAddress)
-        : IJobTrackerCommand, IWithJobId;
-
-    /// <summary>A worker node reporting that a job failed.</summary>
-    public sealed record ReportJobFailed(JobId Id, Address NodeAddress, string Reason)
-        : IJobTrackerCommand, IWithJobId;
-
-    /// <summary>
-    /// A node became available to run work. Derived by the tracker actor from
-    /// <see cref="ClusterEvent.IMemberEvent"/> plus the default capacity from configuration.
-    /// </summary>
-    /// <remarks>
-    /// A command rather than an event because the tracker still gets to decide: a re-announcement of
-    /// a known node updates its status instead of resetting the capacity it's already committed to.
-    /// </remarks>
-    public sealed record NodeJoined(Address NodeAddress, MemberStatus Status, JobSize MaxCapacity)
-        : IJobTrackerCommand;
-
-    /// <summary>
-    /// A node is gone for good. Everything it was running gets requeued.
-    /// </summary>
-    /// <remarks>
-    /// Derive this from <see cref="ClusterEvent.MemberRemoved"/> — the point at which Akka.Cluster
-    /// has committed to the node being dead — not from
-    /// <see cref="ClusterEvent.UnreachableMember"/>. See the comment on
-    /// <c>JobTrackerState.OnNodeReachabilityChanged</c> for why the distinction matters.
-    /// </remarks>
-    public sealed record NodeLeft(Address NodeAddress) : IJobTrackerCommand;
-
-    /// <summary>
-    /// Akka.Cluster's failure detector changed its mind about whether it can see a node. Derived
-    /// from <see cref="ClusterEvent.UnreachableMember"/> and
-    /// <see cref="ClusterEvent.ReachableMember"/>.
-    /// </summary>
-    /// <remarks>
-    /// Unreachable nodes stop receiving new work but keep what they already hold. This is a
-    /// transient verdict: it either heals, or the downing provider escalates it to
-    /// <see cref="ClusterEvent.MemberRemoved"/> and <see cref="NodeLeft"/> does the requeueing.
-    /// </remarks>
-    public sealed record NodeReachabilityChanged(Address NodeAddress, bool Reachable)
-        : IJobTrackerCommand;
-
-    /// <summary>
-    /// The authoritative set of worker nodes, as a whole. Anything the tracker believes in that
-    /// isn't listed here has left; anything listed that it doesn't know about is new.
-    /// </summary>
-    /// <remarks>
-    /// Derived from <see cref="ClusterEvent.CurrentClusterState"/>, which arrives on subscribe.
-    /// Incremental events alone can't recover a tracker that was down while a node left: the
-    /// <see cref="ClusterEvent.MemberRemoved"/> went to a process that no longer exists, and
-    /// replaying the journal faithfully restores a node that is gone. Reconciling against the live
-    /// membership is what closes that gap.
-    /// </remarks>
-    /// <param name="Members">Every worker node the cluster currently has, with its capacity.</param>
-    public sealed record SyncNodes(ImmutableDictionary<Address, JobSize> Members)
-        : IJobTrackerCommand;
-
-    /// <summary>
-    /// Internal tick: try to place queued jobs. Every other command already drains the queue, so
-    /// this is just a safety net for a tracker that has gone quiet with work still queued.
-    /// </summary>
-    public sealed record DrainQueue : IJobTrackerCommand
-    {
-        public static readonly DrainQueue Instance = new();
-    }
 }
 
 /// <summary>

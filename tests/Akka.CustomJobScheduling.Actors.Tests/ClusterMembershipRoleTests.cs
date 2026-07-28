@@ -37,7 +37,7 @@ public class WorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
     [Fact]
     public async Task Includes_a_worker_in_the_membership_snapshot()
     {
-        // Join before subscribing. The translator derives SyncNodes from the CurrentClusterState
+        // Join before subscribing. The translator derives NodesSynced from the CurrentClusterState
         // snapshot it receives at subscribe time, so subscribing first is a race: if the snapshot
         // is taken before the node reaches Up, membership is legitimately empty and the assertion
         // has nothing to look at.
@@ -46,7 +46,7 @@ public class WorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
         var probe = CreateTestProbe();
         new ClusterMembershipSource(Sys, new JobSize(100), "worker").Subscribe(probe);
 
-        var sync = await probe.ExpectMsgAsync<JobTrackerCommands.SyncNodes>(
+        var sync = await probe.ExpectMsgAsync<JobTrackerFacts.NodesSynced>(
             TimeSpan.FromSeconds(10));
 
         Assert.Equal(new JobSize(100), sync.Members[Akka.Cluster.Cluster.Get(Sys).SelfAddress]);
@@ -79,7 +79,7 @@ public class NonWorkerRoleMembershipTests : Akka.Hosting.TestKit.TestKit
 
         // The node is Up and the translator saw it — it just isn't ours to schedule onto, so the
         // reconciliation reports an empty worker set rather than omitting the message.
-        var sync = await probe.ExpectMsgAsync<JobTrackerCommands.SyncNodes>(
+        var sync = await probe.ExpectMsgAsync<JobTrackerFacts.NodesSynced>(
             TimeSpan.FromSeconds(10));
 
         Assert.Empty(sync.Members);
