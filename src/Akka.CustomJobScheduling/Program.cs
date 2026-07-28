@@ -30,8 +30,10 @@ builder.Services.AddOpenTelemetry()
         .AddHttpClientInstrumentation())
     .UseOtlpExporter();
 
-// How many work units this node can run in parallel. Uniform across replicas by default; override
-// per-replica from the AppHost to make placement decisions visible in the dashboard.
+// How many work units this node can run in parallel. The scheduler assumes uniform capacity across
+// the cluster: the tracker applies its own configured value to every worker, so set this the same on
+// every replica. Heterogeneous nodes would need each to advertise its own capacity, which this
+// system deliberately doesn't do.
 var nodeCapacity = builder.Configuration.GetValue(
     "Jobs:NodeCapacity",
     JobSchedulingHostingExtensions.DefaultNodeCapacity);

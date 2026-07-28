@@ -17,8 +17,17 @@ public sealed class JobExecutorActor : ReceiveActor
     /// <summary>Internal tick: another chunk of work finished.</summary>
     private sealed record WorkCompleted(JobSize Amount);
 
-    /// <summary>Internal: the simulated work threw.</summary>
+    /// <summary>Internal: the work itself threw - a genuine job failure to report to the tracker.</summary>
     private sealed record WorkFailed(string Reason);
+
+    /// <summary>
+    /// Internal: the actor is being stopped (cancelled or shut down). A stop is not a failure, so
+    /// there is nothing to report - the work just stops.
+    /// </summary>
+    private sealed record Stopping
+    {
+        public static readonly Stopping Instance = new();
+    }
 
     public static Props Props(
         JobDefinition job,
@@ -54,6 +63,10 @@ public sealed class JobExecutorActor : ReceiveActor
             _tracker.Tell(new JobTrackerFacts.ExecutionFailed(_job.Id, _nodeAddress, failed.Reason));
             Context.Stop(Self);
         });
+
+        // A cancellation that lost the race with PostStop can still deliver this; the actor is already
+        // on its way out, so it's a no-op rather than anything reported to the tracker.
+        Receive<Stopping>(_ => { });
     }
 
     protected override void PreStart()
@@ -113,8 +126,16 @@ public sealed class JobExecutorActor : ReceiveActor
             }
             catch (OperationCanceledException)
             {
-                // Actor is stopping — PipeTo has nowhere useful to deliver, and that's fine.
-                return new WorkFailed("Execution cancelled.");
+                // The token is only cancelled in PostStop, so getting here means the actor is being
+                // stopped (cancelled job, node shutting down). A stop is not a failure - report
+                // nothing. PipeTo delivers this to a no-op handler or to dead letters, both fine.
+                return Stopping.Instance;
+            }
+            catch (Exception ex)
+            {
+                // A genuine failure from the work itself. Task.Delay never lands here, but real work
+                // swapped in for it can - this is the path that surfaces it to the tracker as Faulted.
+                return new WorkFailed(ex.Message);
             }
         }
     }

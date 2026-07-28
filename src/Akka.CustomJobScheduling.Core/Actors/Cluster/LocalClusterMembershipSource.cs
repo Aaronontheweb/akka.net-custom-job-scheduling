@@ -40,7 +40,8 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
     public void Subscribe(IActorRef subscriber)
     {
         JobTrackerFacts.NodesSynced sync;
-        Address[] unreachable;
+        Address[] members;
+        HashSet<Address> unreachable;
 
         lock (_gate)
         {
@@ -48,14 +49,20 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
                 return;
 
             sync = new JobTrackerFacts.NodesSynced(_members.ToImmutableDictionary());
+            members = [.. _members.Keys];
             unreachable = [.. _unreachable];
         }
 
         subscriber.Tell(sync);
 
-        foreach (var address in unreachable)
+        // Report the current reachability of every member, not only the unreachable ones, so a
+        // subscriber reconnecting with a stale unreachable flag (a tracker recovered from its journal)
+        // gets it corrected. Mirrors ClusterEventTranslator on CurrentClusterState.
+        foreach (var address in members)
         {
-            subscriber.Tell(new JobTrackerFacts.NodeReachabilityChanged(address, Reachable: false));
+            subscriber.Tell(new JobTrackerFacts.NodeReachabilityChanged(
+                address,
+                Reachable: !unreachable.Contains(address)));
         }
     }
 

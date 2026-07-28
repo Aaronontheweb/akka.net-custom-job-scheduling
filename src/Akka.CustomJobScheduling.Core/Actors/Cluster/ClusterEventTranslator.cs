@@ -45,9 +45,18 @@ internal sealed class ClusterEventTranslator : ReceiveActor
 
             _target.Tell(new JobTrackerFacts.NodesSynced(members));
 
-            foreach (var unreachable in state.Unreachable)
+            // Reconcile reachability for every worker member, not only the unreachable ones. A tracker
+            // that recovered from its journal can hold a stale unreachable flag on a node that has
+            // since healed - the ReachableMember event that would have cleared it went to the previous
+            // tracker. Reporting the current verdict for each member corrects that; OnNodeReachability-
+            // Changed is a no-op when the value is unchanged, so only the genuinely stale one flips.
+            var unreachable = state.Unreachable
+                .Select(member => member.Address)
+                .ToImmutableHashSet();
+
+            foreach (var member in state.Members)
             {
-                Reachability(unreachable, reachable: false);
+                Reachability(member, reachable: !unreachable.Contains(member.Address));
             }
         });
 
