@@ -3,7 +3,6 @@ using Akka.CustomJobScheduling.Core.Actors;
 using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.TestKit;
-using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
 

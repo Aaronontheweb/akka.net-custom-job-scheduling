@@ -8,7 +8,6 @@ using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.CustomJobScheduling.Core.Serialization;
 using Akka.Hosting;
 using Akka.Serialization;
-using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
 

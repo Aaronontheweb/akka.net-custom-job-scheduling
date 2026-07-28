@@ -3,6 +3,10 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- xUnit1051 (xunit v3 analyzer) wants TestContext.Current.CancellationToken threaded through
+         every call with a token overload - Task.Delay, Ask, ExpectMsgAsync, HttpClient. Advisory
+         about cancellation responsiveness, not correctness, and pervasive across the async test
+         suite; not worth the churn for a demo. -->
+    <NoWarn>$(NoWarn);CS1591;xUnit1051</NoWarn>
   </PropertyGroup>
 </Project>
