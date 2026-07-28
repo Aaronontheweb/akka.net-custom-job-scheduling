@@ -30,6 +30,9 @@ public sealed class GenericChildPerEntityParent : ReceiveActor
             if (entityId is null)
                 return;
 
+            // The entity id doubles as the child's actor name here, exactly as it does inside a real
+            // shard region, so the extractor is responsible for returning a URI-safe id (see
+            // JobSubmitterMessageExtractor, which encodes user input for that reason).
             Context.Child(entityId)
                 .GetOrElse(() => Context.ActorOf(propsFactory(entityId), entityId))
                 .Forward(_extractor.EntityMessage(o));

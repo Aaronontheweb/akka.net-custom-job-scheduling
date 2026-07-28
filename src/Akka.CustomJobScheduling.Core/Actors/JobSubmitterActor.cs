@@ -72,9 +72,16 @@ public sealed class JobSubmitterMessageExtractor : HashCodeMessageExtractor
     {
     }
 
+    /// <remarks>
+    /// The entity id doubles as the entity's actor name - in a shard region and in
+    /// <see cref="GenericChildPerEntityParent"/> alike - so it has to be URI-safe. A submitter id is
+    /// user input and generally isn't, so it's URI-encoded here rather than rejected at the edge. The
+    /// entity decodes it back to the real id (see the submitter props factory). Encoding is stable, so
+    /// a submission and the notification routed back to it land on the same entity.
+    /// </remarks>
     public override string? EntityId(object message) => message switch
     {
-        IWithJobSubmitterId withSubmitter => withSubmitter.SubmitterId.Value,
+        IWithJobSubmitterId withSubmitter => Uri.EscapeDataString(withSubmitter.SubmitterId.Value),
         _ => null
     };
 }

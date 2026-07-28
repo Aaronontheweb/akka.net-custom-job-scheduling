@@ -8,6 +8,9 @@ public class WorkValueTests
     [InlineData(0u, 0u, 0u)]
     [InlineData(10u, 4u, 14u)]
     [InlineData(uint.MaxValue - 1u, 1u, uint.MaxValue)]
+    // Saturating, not wrapping: unguarded uint addition would overflow to a tiny value here.
+    [InlineData(uint.MaxValue, 10u, uint.MaxValue)]
+    [InlineData(uint.MaxValue, uint.MaxValue, uint.MaxValue)]
     public void JobSize_adds(uint left, uint right, uint expected)
     {
         Assert.Equal(new JobSize(expected), new JobSize(left) + new JobSize(right));
