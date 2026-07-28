@@ -31,7 +31,7 @@ public class NodeCapacityComparerTests
     {
         var node = Node("node", status, reachable, maximum, inUse);
 
-        Assert.Equal(expected, node.CanAccept(Job("job", 20)));
+        Assert.Equal(expected, node.IsEligible && node.HasCapacityFor(Job("job", 20)));
     }
 
     [Theory]

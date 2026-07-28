@@ -13,17 +13,12 @@ namespace Akka.CustomJobScheduling.Core.Serialization;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Covers the same three concerns as before — events and snapshots for the journal, messages across
-/// node boundaries, and their replies — but the wire format is now plain JSON produced by
-/// source-generated metadata (<see cref="JobSchedulingJsonContext"/>) plus a handful of converters
-/// for the Akka types and value objects. The payoff is legibility: a journal entry is readable JSON,
-/// and the mapping from a C# record to its wire shape is whatever System.Text.Json does by default,
-/// which most .NET developers already know.
-/// </para>
-/// <para>
-/// The manifest strings and serializer id are unchanged from the previous MessagePack
-/// implementation, but the bytes are not compatible: anything written by the old serializer must be
-/// purged before this one reads the journal.
+/// The wire format is plain JSON produced by source-generated metadata
+/// (<see cref="JobSchedulingJsonContext"/>) plus a handful of converters for the Akka types and value
+/// objects. The payoff is legibility: a journal entry is readable JSON, and the mapping from a C#
+/// record to its wire shape is whatever System.Text.Json does by default, which most .NET developers
+/// already know. It covers three concerns: events and snapshots for the journal, messages across node
+/// boundaries, and their replies.
 /// </para>
 /// <para>
 /// Deliberately absent: <c>JobStreamMessages</c>. Those carry a <c>ChannelReader</c> and a child

@@ -41,8 +41,12 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
     /// </summary>
     public const string PersistentId = "job-tracker";
 
-    /// <summary>Snapshot cadence. Bounds replay time; the journal is still the source of truth.</summary>
-    private const int SnapshotEvery = 200;
+    /// <summary>
+    /// Snapshot cadence. Every this many events the tracker snapshots and then trims the journal up to
+    /// that point, so replay time and journal size both stay bounded instead of growing for the life of
+    /// the singleton.
+    /// </summary>
+    private const int SnapshotEvery = 100;
 
     private const string DrainTimerKey = "drain-queue";
     private static readonly TimeSpan DrainInterval = TimeSpan.FromSeconds(5);
@@ -59,6 +63,12 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
     private readonly HashSet<IActorRef> _queueSubscribers = [];
 
     private JobTrackerState _state = JobTrackerState.Empty;
+
+    /// <summary>
+    /// Sequence number of the most recent snapshot. Cadence is measured from here rather than from an
+    /// exact multiple of <see cref="SnapshotEvery"/>, which a multi-event batch can step straight over.
+    /// </summary>
+    private long _lastSnapshotSequenceNr;
 
     public ITimerScheduler Timers { get; set; } = null!;
 
@@ -85,17 +95,30 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         Command<JobTrackerQueries.UnsubscribeFromQueue>(HandleUnsubscribeFromQueue);
         Command<Terminated>(terminated => DropSubscriber(terminated.ActorRef));
         Command<SaveSnapshotSuccess>(success =>
-            DeleteSnapshots(new SnapshotSelectionCriteria(success.Metadata.SequenceNr - 1)));
+        {
+            // The snapshot captures state through its sequence number, so every journal entry up to and
+            // including it is now redundant: recovery loads the snapshot and replays only what follows.
+            // Trim the journal and the older snapshots so neither grows for the life of the singleton.
+            DeleteMessages(success.Metadata.SequenceNr);
+            DeleteSnapshots(new SnapshotSelectionCriteria(success.Metadata.SequenceNr - 1));
+        });
         Command<SaveSnapshotFailure>(failure =>
             _log.Warning("Snapshot at sequence {SequenceNr} failed: {Reason}",
                 failure.Metadata.SequenceNr, failure.Cause.Message));
         Command<DeleteSnapshotsSuccess>(_ => { });
         Command<DeleteSnapshotsFailure>(_ => { });
+        Command<DeleteMessagesSuccess>(_ => { });
+        Command<DeleteMessagesFailure>(failure =>
+            _log.Warning("Trimming the journal to sequence {SequenceNr} failed: {Reason}",
+                failure.ToSequenceNr, failure.Cause.Message));
 
         Recover<SnapshotOffer>(offer =>
         {
-            if (offer.Snapshot is JobTrackerState snapshot)
-                _state = snapshot;
+            if (offer.Snapshot is not JobTrackerState snapshot)
+                return;
+
+            _state = snapshot;
+            _lastSnapshotSequenceNr = offer.Metadata.SequenceNr;
         });
 
         Recover<IJobTrackerEvent>(@event => _state = _state.Apply(@event));
@@ -188,8 +211,14 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
             onComplete?.Invoke();
 
-            if (LastSequenceNr % SnapshotEvery == 0)
+            // Measure cadence from the last snapshot's sequence, not against an exact multiple: a
+            // multi-event batch (submit-with-placement, a node-loss fan-out) advances LastSequenceNr in
+            // one step and would otherwise leap straight over the boundary and skip the snapshot.
+            if (LastSequenceNr - _lastSnapshotSequenceNr >= SnapshotEvery)
+            {
                 SaveSnapshot(_state);
+                _lastSnapshotSequenceNr = LastSequenceNr;
+            }
         });
     }
 
