@@ -11,7 +11,7 @@ namespace Akka.CustomJobScheduling.Core.Serialization;
 public static class SerializationHostingExtensions
 {
     /// <summary>
-    /// Binds the job scheduling domain to its MessagePack serializer.
+    /// Binds the job scheduling domain to its System.Text.Json serializer.
     /// </summary>
     /// <remarks>
     /// Bindings are declared against the marker interfaces, so a new event or command is covered

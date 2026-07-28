@@ -42,6 +42,37 @@ public class JobTrackerRecoveryTests : JobSchedulingTestKit
     }
 
     [Fact]
+    public async Task State_survives_a_restart_after_the_journal_is_snapshotted_and_trimmed()
+    {
+        // Drive more than SnapshotEvery (100) events through the tracker so it snapshots and then
+        // trims the journal underneath itself. Each running submission persists three events
+        // (JobAccepted + JobQueued + JobScheduled), so ~40 jobs comfortably crosses the boundary.
+        Membership.MemberUp("node-a", 1000);
+
+        const int jobs = 40;
+        for (var i = 0; i < jobs; i++)
+            await SubmitAsync($"job-{i:D2}", 1);
+
+        await AwaitStatusAsync($"job-{jobs - 1:D2}", JobStatus.Running);
+
+        // Failover. Recovery has to load the snapshot and replay only what followed it; if the
+        // DeleteMessages trim removed anything the snapshot didn't already cover, a job would come
+        // back missing or in the wrong state.
+        var restarted = await RestartTrackerAsync();
+
+        foreach (var id in new[] { "job-00", "job-20", $"job-{jobs - 1:D2}" })
+        {
+            var status = await restarted.Ask<IJobTrackerQueryResponse>(
+                new JobTrackerQueries.GetJobStatus(new JobId(id)),
+                RemainingOrDefault);
+
+            var found = Assert.IsType<JobTrackerQueryResponses.JobStatusResult>(status);
+            Assert.Equal(JobStatus.Running, found.Progress.Status);
+            Assert.Equal(NodeAddress("node-a"), found.AssignedNode);
+        }
+    }
+
+    [Fact]
     public async Task Accepted_jobs_survive_a_restart()
     {
         Membership.MemberUp("node-a", 100);

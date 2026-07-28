@@ -13,13 +13,6 @@ namespace Akka.CustomJobScheduling.Core.Jobs;
 public sealed record JobDefinition(JobId Id, JobSize Size) : IWithJobId;
 
 /// <summary>
-/// The amount of total capacity defined on each node.
-/// </summary>
-/// <param name="NodeAddress">The Akka.NET Address for this node.</param>
-/// <param name="MaxCapacity">Maximum cumulative work units that can run in parallel.</param>
-public sealed record NodeCapacity(Address NodeAddress, JobSize MaxCapacity);
-
-/// <summary>
 /// Describes the allocation burden + Akka.Cluster status of a given worker node.
 /// </summary>
 public sealed record NodeStatus(
@@ -40,8 +33,6 @@ public sealed record NodeStatus(
     public bool IsEligible => Status is MemberStatus.Up or MemberStatus.WeaklyUp && Reachable;
 
     public bool HasCapacityFor(JobDefinition job) => AvailableCapacity >= job.Size;
-
-    public bool CanAccept(JobDefinition job) => IsEligible && HasCapacityFor(job);
 
     /// <summary>
     /// Whether this node can start <paramref name="job"/> right now.
