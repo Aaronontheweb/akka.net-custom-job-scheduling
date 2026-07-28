@@ -51,7 +51,7 @@ public sealed class JobExecutorActor : ReceiveActor
         Receive<WorkFailed>(failed =>
         {
             _log.Warning("Job {JobId} failed: {Reason}", _job.Id.Value, failed.Reason);
-            _tracker.Tell(new JobTrackerCommands.ReportJobFailed(_job.Id, _nodeAddress, failed.Reason));
+            _tracker.Tell(new JobTrackerFacts.ExecutionFailed(_job.Id, _nodeAddress, failed.Reason));
             Context.Stop(Self);
         });
     }
@@ -77,7 +77,7 @@ public sealed class JobExecutorActor : ReceiveActor
         if (_completed >= _job.Size)
         {
             _log.Info("Completed job {JobId}", _job.Id.Value);
-            _tracker.Tell(new JobTrackerCommands.ReportJobCompleted(_job.Id, _nodeAddress));
+            _tracker.Tell(new JobTrackerFacts.ExecutionCompleted(_job.Id, _nodeAddress));
 
             // The job is done and this actor has nothing left to do. The receiver is watching and
             // will clean up its bookkeeping when the Terminated arrives.
@@ -85,7 +85,7 @@ public sealed class JobExecutorActor : ReceiveActor
             return;
         }
 
-        _tracker.Tell(new JobTrackerCommands.ReportProgress(
+        _tracker.Tell(new JobTrackerFacts.ProgressReported(
             _job.Id,
             _nodeAddress,
             new WorkProgress(_completed, _job.Size)));

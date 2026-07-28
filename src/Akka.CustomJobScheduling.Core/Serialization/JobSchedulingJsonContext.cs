@@ -39,14 +39,16 @@ namespace Akka.CustomJobScheduling.Core.Serialization;
 // commands
 [JsonSerializable(typeof(JobTrackerCommands.SubmitJob))]
 [JsonSerializable(typeof(JobTrackerCommands.CancelJob))]
-[JsonSerializable(typeof(JobTrackerCommands.ReportProgress))]
-[JsonSerializable(typeof(JobTrackerCommands.ReportJobCompleted))]
-[JsonSerializable(typeof(JobTrackerCommands.ReportJobFailed))]
-[JsonSerializable(typeof(JobTrackerCommands.NodeJoined))]
-[JsonSerializable(typeof(JobTrackerCommands.NodeLeft))]
-[JsonSerializable(typeof(JobTrackerCommands.NodeReachabilityChanged))]
-[JsonSerializable(typeof(JobTrackerCommands.SyncNodes))]
-[JsonSerializable(typeof(JobTrackerCommands.DrainQueue))]
+
+// facts
+[JsonSerializable(typeof(JobTrackerFacts.ProgressReported))]
+[JsonSerializable(typeof(JobTrackerFacts.ExecutionCompleted))]
+[JsonSerializable(typeof(JobTrackerFacts.ExecutionFailed))]
+[JsonSerializable(typeof(JobTrackerFacts.NodeJoined))]
+[JsonSerializable(typeof(JobTrackerFacts.NodeLeft))]
+[JsonSerializable(typeof(JobTrackerFacts.NodeReachabilityChanged))]
+[JsonSerializable(typeof(JobTrackerFacts.NodesSynced))]
+[JsonSerializable(typeof(JobTrackerFacts.DrainQueue))]
 
 // command responses
 [JsonSerializable(typeof(JobTrackerResponses.CommandAccepted))]

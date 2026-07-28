@@ -135,14 +135,14 @@ public class JobApiTests : IClassFixture<JobApiFactory>
         Assert.False(string.IsNullOrWhiteSpace((await JsonOf(response)).GetProperty("id").GetString()));
     }
 
-    [Theory]
-    [InlineData(0, HttpStatusCode.BadRequest)]              // size must be positive
-    [InlineData(999999, HttpStatusCode.UnprocessableEntity)] // larger than any node
-    public async Task Invalid_submissions_are_refused(uint size, HttpStatusCode expected)
+    [Fact]
+    public async Task A_zero_size_submission_is_refused()
     {
-        var response = await Client().PostAsJsonAsync("/jobs", new { size, submitterId = "tester" });
+        // Size must be positive — rejected at the DTO layer before it reaches the tracker. A job
+        // larger than any node is *not* refused any more: it's accepted and run on a whole node.
+        var response = await Client().PostAsJsonAsync("/jobs", new { size = 0, submitterId = "tester" });
 
-        Assert.Equal(expected, response.StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]

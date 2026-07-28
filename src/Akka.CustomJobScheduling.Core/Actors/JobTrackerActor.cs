@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Akka.Actor;
 using Akka.CustomJobScheduling.Core.Actors.Cluster;
 using Akka.CustomJobScheduling.Core.JobTracker;
@@ -73,6 +74,7 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         _time = time;
 
         Command<IJobTrackerCommand>(HandleCommand);
+        Command<IJobTrackerFact>(HandleFact);
         Command<JobTrackerQueries.GetJobStatus>(query => Sender.Tell(_state.GetJobStatus(query.Id)));
         Command<JobTrackerQueries.GetQueueStatus>(_ => Sender.Tell(_state.GetQueueStatus()));
         Command<JobTrackerQueries.GetJobs>(query =>
@@ -117,13 +119,17 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
         Timers.StartPeriodicTimer(
             DrainTimerKey,
-            JobTrackerCommands.DrainQueue.Instance,
+            JobTrackerFacts.DrainQueue.Instance,
             DrainInterval,
             DrainInterval);
     }
 
     protected override void PostStop() => _membership.Unsubscribe(Self);
 
+    /// <summary>
+    /// A request that can be answered yes or no. <see cref="JobTrackerState.Decide"/> validates it;
+    /// a rejection is a reply the sender is waiting on.
+    /// </summary>
     private void HandleCommand(IJobTrackerCommand command)
     {
         var decision = _state.Decide(command, _time.GetUtcNow());
@@ -139,21 +145,48 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
         // Sender is captured because the persist callback runs later, by which point Sender belongs
         // to whatever message is being handled then.
         var replyTo = Sender;
-        var remaining = decision.Events.Length;
 
-        PersistAll(decision.Events, @event =>
+        PersistAndApply(decision.Events, () =>
+        {
+            if (decision.Response is not null)
+                replyTo.Tell(decision.Response);
+        });
+    }
+
+    /// <summary>
+    /// Something that already happened — a worker report, a membership change.
+    /// <see cref="JobTrackerState.Integrate"/> folds it into events; there is nothing to reply,
+    /// because a fact can't be refused.
+    /// </summary>
+    private void HandleFact(IJobTrackerFact fact)
+    {
+        var events = _state.Integrate(fact, _time.GetUtcNow());
+
+        if (!events.IsEmpty)
+            PersistAndApply(events, onComplete: null);
+    }
+
+    /// <summary>
+    /// Persists events, then folds and reacts to each once it's durable. Shared by commands and
+    /// facts — the only difference between them is what runs after the last event lands.
+    /// </summary>
+    /// <remarks>
+    /// React runs only after the event is durable. Dispatching work we haven't recorded would leave
+    /// a job running on a node the tracker forgets about the moment it restarts.
+    /// </remarks>
+    private void PersistAndApply(ImmutableArray<IJobTrackerEvent> events, Action? onComplete)
+    {
+        var remaining = events.Length;
+
+        PersistAll(events, @event =>
         {
             _state = _state.Apply(@event);
-
-            // React only after the event is durable. Dispatching work we haven't recorded would
-            // leave a job running on a node the tracker forgets about the moment it restarts.
             React(@event);
 
             if (--remaining > 0)
                 return;
 
-            if (decision.Response is not null)
-                replyTo.Tell(decision.Response);
+            onComplete?.Invoke();
 
             if (LastSequenceNr % SnapshotEvery == 0)
                 SaveSnapshot(_state);

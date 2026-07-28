@@ -4,6 +4,7 @@ using Akka.Cluster;
 using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
 using static Akka.CustomJobScheduling.Core.JobTracker.JobTrackerCommands;
+using static Akka.CustomJobScheduling.Core.JobTracker.JobTrackerFacts;
 using static Akka.CustomJobScheduling.Core.JobTracker.JobTrackerResponses;
 
 namespace Akka.CustomJobScheduling.Core.Tests;
@@ -36,6 +37,18 @@ public class JobTrackerStateTests
             Journal = Journal.AddRange(decision.Events);
             State = State.Fold(decision.Events);
             return decision;
+        }
+
+        /// <summary>
+        /// Facts take the other door: <see cref="JobTrackerState.Integrate"/>, which returns bare
+        /// events and can't reject.
+        /// </summary>
+        public ImmutableArray<IJobTrackerEvent> Send(IJobTrackerFact fact, DateTimeOffset? at = null)
+        {
+            var events = State.Integrate(fact, at ?? Now);
+            Journal = Journal.AddRange(events);
+            State = State.Fold(events);
+            return events;
         }
 
         public TrackedJob Job(string id) => State.Jobs[new JobId(id)];
@@ -82,16 +95,19 @@ public class JobTrackerStateTests
     }
 
     [Fact]
-    public void Submitting_a_job_no_node_could_ever_run_is_rejected()
+    public void An_oversized_job_is_placed_and_run_rather_than_refused()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 50));
 
+        // 100 units on a 50-unit node. It can't fit, but it isn't refused — it's placed on the only
+        // node and runs there exclusively. Size is an execution-time problem, not a validity one.
         var decision = tracker.Send(new SubmitJob(Job("job-1", 100), Submitter));
 
-        var rejected = Assert.IsType<CommandRejected>(decision.Response);
-        Assert.Equal(JobRejectionReason.ExceedsClusterCapacity, rejected.Reason);
-        Assert.Empty(tracker.State.Jobs);
+        Assert.IsType<CommandAccepted>(decision.Response);
+        var job = tracker.Job("job-1");
+        Assert.Equal(JobStatus.Running, job.Status);
+        Assert.Equal(Node("node-a"), job.AssignedNode);
     }
 
     [Fact]
@@ -227,7 +243,7 @@ public class JobTrackerStateTests
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
-        tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-a")));
+        tracker.Send(new ExecutionCompleted(new JobId("job-1"), Node("node-a")));
 
         var decision = tracker.Send(new CancelJob(new JobId("job-1"), Submitter, "too late"));
 
@@ -251,59 +267,55 @@ public class JobTrackerStateTests
     // ------------------------------------------------------------------
 
     [Fact]
-    public void Worker_reports_are_recorded_without_an_acknowledgement()
+    public void Facts_produce_events_but_never_a_reply()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
 
-        // The executor stops itself the moment it reports completion, and the tracker only replies
-        // after its journal write returns — so an ack would arrive at a dead actor and show up as a
-        // dead letter for every finished job. These commands record their effects and stay quiet.
-        var progress = tracker.Send(new ReportProgress(
+        // A fact goes through Integrate, which hands back only events — there is no reply channel at
+        // all, so there is nothing to acknowledge and nothing to dead-letter at the executor that
+        // stopped the instant it reported. The type says so: this returns events, not a decision.
+        var progress = tracker.Send(new ProgressReported(
             new JobId("job-1"),
             Node("node-a"),
             new WorkProgress(new JobSize(10), new JobSize(40))));
 
-        var completed = tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-a")));
-
-        Assert.Null(progress.Response);
-        Assert.Null(completed.Response);
+        tracker.Send(new ExecutionCompleted(new JobId("job-1"), Node("node-a")));
 
         // Silent, but not inert — the events still land.
-        Assert.NotEmpty(progress.Events);
+        Assert.NotEmpty(progress);
         Assert.Equal(JobStatus.Completed, tracker.Job("job-1").Status);
     }
 
     [Fact]
-    public void A_rejected_worker_report_still_answers()
+    public void A_report_from_a_node_that_no_longer_owns_the_job_is_ignored()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
 
-        // Rejections are rare and mean something is wrong — an executor reporting on a job it no
-        // longer owns — so unlike the success path they are worth saying out loud.
-        var decision = tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-b")));
+        // A fact can't be rejected. A completion reported by the wrong node — the job was requeued
+        // elsewhere, say — implies no events and changes nothing. No "no" goes back to anyone.
+        var events = tracker.Send(new ExecutionCompleted(new JobId("job-1"), Node("node-b")));
 
-        var rejected = Assert.IsType<CommandRejected>(decision.Response);
-        Assert.Equal(JobRejectionReason.StaleReport, rejected.Reason);
+        Assert.Empty(events);
+        Assert.Equal(JobStatus.Running, tracker.Job("job-1").Status);
     }
 
     [Fact]
-    public void Progress_reports_from_a_node_that_does_not_own_the_job_are_rejected()
+    public void Progress_reported_by_a_node_that_does_not_own_the_job_is_ignored()
     {
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
 
-        var decision = tracker.Send(new ReportProgress(
+        var events = tracker.Send(new ProgressReported(
             new JobId("job-1"),
             Node("node-b"),
             new WorkProgress(new JobSize(20), new JobSize(40))));
 
-        var rejected = Assert.IsType<CommandRejected>(decision.Response);
-        Assert.Equal(JobRejectionReason.StaleReport, rejected.Reason);
+        Assert.Empty(events);
         Assert.Equal(JobSize.Zero, tracker.Job("job-1").Progress.Completed);
     }
 
@@ -314,7 +326,7 @@ public class JobTrackerStateTests
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
 
-        tracker.Send(new ReportProgress(
+        tracker.Send(new ProgressReported(
             new JobId("job-1"),
             Node("node-a"),
             new WorkProgress(new JobSize(10), new JobSize(40))));
@@ -329,7 +341,7 @@ public class JobTrackerStateTests
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
 
-        tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-a")));
+        tracker.Send(new ExecutionCompleted(new JobId("job-1"), Node("node-a")));
 
         var job = tracker.Job("job-1");
         Assert.Equal(JobStatus.Completed, job.Status);
@@ -344,12 +356,12 @@ public class JobTrackerStateTests
         var tracker = new Tracker();
         tracker.Send(Joining("node-a", 100));
         tracker.Send(new SubmitJob(Job("job-1", 40), Submitter));
-        tracker.Send(new ReportProgress(
+        tracker.Send(new ProgressReported(
             new JobId("job-1"),
             Node("node-a"),
             new WorkProgress(new JobSize(30), new JobSize(40))));
 
-        tracker.Send(new ReportJobFailed(new JobId("job-1"), Node("node-a"), "boom"));
+        tracker.Send(new ExecutionFailed(new JobId("job-1"), Node("node-a"), "boom"));
 
         Assert.Equal(JobStatus.Faulted, tracker.Job("job-1").Status);
         Assert.Equal(new JobSize(30), tracker.Job("job-1").Progress.Completed);
@@ -506,12 +518,12 @@ public class JobTrackerStateTests
         tracker.Send(new SubmitJob(Job("job-1", 60), Submitter));
         tracker.Send(new SubmitJob(Job("job-2", 50), OtherSubmitter));
         tracker.Send(new SubmitJob(Job("job-3", 90), Submitter));
-        tracker.Send(new ReportProgress(
+        tracker.Send(new ProgressReported(
             new JobId("job-1"),
             Node("node-a"),
             new WorkProgress(new JobSize(30), new JobSize(60))));
         tracker.Send(new NodeLeft(Node("node-b")));
-        tracker.Send(new ReportJobCompleted(new JobId("job-1"), Node("node-a")));
+        tracker.Send(new ExecutionCompleted(new JobId("job-1"), Node("node-a")));
 
         var recovered = JobTrackerState.Empty.Fold(tracker.Journal);
 
@@ -593,7 +605,7 @@ public class JobTrackerStateTests
 
         // Finish the oldest: it should drop below everything still active, not stay at the top.
         tracker.Send(
-            new ReportJobCompleted(new JobId("first"), Node("node-a")),
+            new ExecutionCompleted(new JobId("first"), Node("node-a")),
             Now.AddSeconds(3));
 
         var listed = tracker.State.GetJobs().Jobs.Select(job => job.Id.Value).ToArray();
@@ -614,7 +626,7 @@ public class JobTrackerStateTests
         // The whole point of ordering by submission: a progress report moves LastUpdatedAt but
         // must not reshuffle the list, which is what made the dashboard unreadable.
         tracker.Send(
-            new ReportProgress(
+            new ProgressReported(
                 new JobId("older"),
                 Node("node-a"),
                 new WorkProgress(new JobSize(30), new JobSize(40))),

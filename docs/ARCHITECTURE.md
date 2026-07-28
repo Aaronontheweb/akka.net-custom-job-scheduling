@@ -4,12 +4,13 @@ How the scheduler is built, for someone about to work in the code. For the outsi
 
 ## State, separated from the actors
 
-The scheduling logic doesn't live in an actor. It lives in `JobTrackerState`, a plain immutable record with two methods:
+The scheduling logic doesn't live in an actor. It lives in `JobTrackerState`, a plain immutable record with three operations. The type of the input decides which one runs:
 
-- `Decide(command, now)` takes a command and returns the events it implies. It validates; it never mutates.
-- `Apply(event)` folds one event into a new state.
+- `Decide(command, now)` takes a command - submit or cancel - validates it, and returns the events it implies or a rejection. The only place a "no" can come from.
+- `Integrate(fact, now)` takes a fact - a worker's progress, a node leaving - and returns the events it implies. It never rejects; a stale fact just returns nothing.
+- `Apply(event)` folds one committed event into a new state. Pure, per-type, and the only thing that runs on recovery.
 
-That's the whole brain of the system - placement, capacity accounting, requeue-on-failure, all of it. It holds no `IActorRef`, never reads the clock (time comes in as an argument), and has no side effects. So you test it like any other function: build a state, hand it a command, check the events that come back. No `ActorSystem`, no `TestKit`, no `await`.
+That's the whole brain of the system - placement, capacity accounting, requeue-on-failure, all of it. It holds no `IActorRef`, never reads the clock (time comes in as an argument), and has no side effects. So you test it like any other function: build a state, hand it a command or a fact, check the events that come back. No `ActorSystem`, no `TestKit`, no `await`.
 
 `JobTrackerActor` is the shell that wires that logic to the outside world:
 
@@ -29,7 +30,7 @@ sequenceDiagram
     A-->>C: reply
 ```
 
-Read the clock, decide, persist, fold, react. The actor stays thin on purpose, so the part that's actually hard to get right - the scheduling rules - stays testable in isolation.
+Read the clock, decide, persist, fold, react. The actor stays thin on purpose, so the part that's actually hard to get right - the scheduling rules - stays testable in isolation. A fact takes the same road but enters through `Integrate` instead of `Decide`, and there's no reply at the end: a fact can't be refused, so nobody's waiting on a yes or no.
 
 ## The message taxonomy
 
@@ -37,12 +38,13 @@ Messages are grouped by their role, not by what they carry:
 
 | Kind | What it is |
 | --- | --- |
-| Commands | Requests. Validated, and can be rejected. |
-| Events | Facts that already happened. This is the persisted schema. |
+| Commands | Requests - submit, cancel. Validated, and the only messages that can be rejected. |
+| Facts | Things that already happened, reported from outside - a worker's progress, a node joining or leaving. Never rejected; a stale one implies no events. |
+| Events | What the tracker commits to its journal. This is the persisted schema. |
 | Queries | Read-only, including subscriptions. |
 | Notifications | The contract pushed out to subscribers and submitters. |
 
-The split between events and notifications is the one that earns its keep. Events are the internal record we write to the journal. Notifications are the public shape we hand to subscribers. Keeping them apart means we can change how state is stored without breaking anyone listening for updates.
+The line between commands and facts is the one to get right. A command is a request that can be told no; a fact already happened and can only be folded in. Rejection lives on one side and never the other, and the return types enforce it - `Decide` can hand back a rejection, `Integrate` structurally cannot. The split between events and notifications earns its keep too: events are the internal record we write to the journal, notifications are the public shape we hand to subscribers, so we can change how state is stored without breaking anyone listening.
 
 ## The actors
 

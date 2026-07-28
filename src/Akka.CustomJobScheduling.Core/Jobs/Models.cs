@@ -44,6 +44,18 @@ public sealed record NodeStatus(
     public bool CanAccept(JobDefinition job) => IsEligible && HasCapacityFor(job);
 
     /// <summary>
+    /// Whether this node can start <paramref name="job"/> right now.
+    /// </summary>
+    /// <remarks>
+    /// Either the job fits within free capacity, or it's larger than the node can ever hold and the
+    /// node is idle — in which case it runs alone and overcommits. An oversized job has to run
+    /// somewhere; refusing it forever isn't an option, so it takes a whole node to itself.
+    /// </remarks>
+    public bool CanRun(JobDefinition job) =>
+        IsEligible &&
+        (HasCapacityFor(job) || (job.Size > MaximumCapacity && CapacityInUse == JobSize.Zero));
+
+    /// <summary>
     /// A node that has just joined the cluster with nothing running on it yet.
     /// </summary>
     public static NodeStatus Joined(

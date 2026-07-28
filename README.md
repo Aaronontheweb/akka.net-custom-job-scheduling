@@ -81,7 +81,7 @@ The API scales separately. It runs under its own `api` role, holds no jobs, and 
 | `GET` | `/cluster/queue` | Queue depth and per-node capacity |
 | `GET` | `/cluster/events` | Server-sent events for the whole queue |
 
-Rejections map onto status codes: duplicate id `409`, unknown job `404`, already finished `409`, wrong submitter `403`, larger than any node `422`.
+Rejections map onto status codes: duplicate id `409`, unknown job `404`, already finished `409`, wrong submitter `403`. A job larger than any node isn't rejected - it's accepted and runs on a whole node to itself.
 
 ## Layout
 

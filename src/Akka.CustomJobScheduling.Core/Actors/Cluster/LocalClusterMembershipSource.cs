@@ -39,7 +39,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
 
     public void Subscribe(IActorRef subscriber)
     {
-        JobTrackerCommands.SyncNodes sync;
+        JobTrackerFacts.NodesSynced sync;
         Address[] unreachable;
 
         lock (_gate)
@@ -47,7 +47,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
             if (!_subscribers.Add(subscriber))
                 return;
 
-            sync = new JobTrackerCommands.SyncNodes(_members.ToImmutableDictionary());
+            sync = new JobTrackerFacts.NodesSynced(_members.ToImmutableDictionary());
             unreachable = [.. _unreachable];
         }
 
@@ -55,7 +55,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
 
         foreach (var address in unreachable)
         {
-            subscriber.Tell(new JobTrackerCommands.NodeReachabilityChanged(address, Reachable: false));
+            subscriber.Tell(new JobTrackerFacts.NodeReachabilityChanged(address, Reachable: false));
         }
     }
 
@@ -76,7 +76,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
             _unreachable.Remove(address);
         }
 
-        Publish(new JobTrackerCommands.NodeJoined(address, Akka.Cluster.MemberStatus.Up, capacity));
+        Publish(new JobTrackerFacts.NodeJoined(address, Akka.Cluster.MemberStatus.Up, capacity));
     }
 
     /// <summary>A node joined and is ready for work.</summary>
@@ -87,7 +87,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
     public void MemberRemoved(Address address)
     {
         Forget(address);
-        Publish(new JobTrackerCommands.NodeLeft(address));
+        Publish(new JobTrackerFacts.NodeLeft(address));
     }
 
     /// <summary>A node was downed and removed. Its work gets requeued.</summary>
@@ -101,7 +101,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
             _unreachable.Add(address);
         }
 
-        Publish(new JobTrackerCommands.NodeReachabilityChanged(address, Reachable: false));
+        Publish(new JobTrackerFacts.NodeReachabilityChanged(address, Reachable: false));
     }
 
     /// <summary>The failure detector lost sight of a node. Its work stays put.</summary>
@@ -115,7 +115,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
             _unreachable.Remove(address);
         }
 
-        Publish(new JobTrackerCommands.NodeReachabilityChanged(address, Reachable: true));
+        Publish(new JobTrackerFacts.NodeReachabilityChanged(address, Reachable: true));
     }
 
     /// <summary>The partition healed.</summary>
@@ -142,7 +142,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
     /// <inheritdoc cref="Forget(Address)"/>
     public void Forget(string host) => Forget(NodeAddress(host));
 
-    private void Publish(IJobTrackerCommand command)
+    private void Publish(IJobTrackerFact fact)
     {
         IActorRef[] targets;
 
@@ -153,7 +153,7 @@ public sealed class LocalClusterMembershipSource : IClusterMembershipSource
 
         foreach (var subscriber in targets)
         {
-            subscriber.Tell(command);
+            subscriber.Tell(fact);
         }
     }
 }

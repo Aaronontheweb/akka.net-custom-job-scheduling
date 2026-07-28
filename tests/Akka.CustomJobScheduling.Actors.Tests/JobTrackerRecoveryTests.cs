@@ -66,7 +66,7 @@ public class JobTrackerRecoveryTests : JobSchedulingTestKit
         await SubmitAsync("tracked", 10);
         await AwaitStatusAsync("tracked", JobStatus.Running);
 
-        Tracker.Tell(new JobTrackerCommands.ReportProgress(
+        Tracker.Tell(new JobTrackerFacts.ProgressReported(
             new JobId("tracked"),
             NodeAddress("node-a"),
             new WorkProgress(new JobSize(6), new JobSize(10))),
