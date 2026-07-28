@@ -271,7 +271,11 @@ public static class JobSchedulingHostingExtensions
         });
 
     private static Props SubmitterProps(IActorRegistry registry, string entityId) =>
-        JobSubmitterActor.Props(new JobSubmitterId(entityId), registry.Get<JobTrackerKey>());
+        // The entity id is URI-encoded by JobSubmitterMessageExtractor so it is a valid actor name;
+        // decode it back to the submitter's real id here.
+        JobSubmitterActor.Props(
+            new JobSubmitterId(Uri.UnescapeDataString(entityId)),
+            registry.Get<JobTrackerKey>());
 
     private static IJobExecutionPacer Pacer(IDependencyResolver resolver) =>
         resolver.GetService<IJobExecutionPacer>();

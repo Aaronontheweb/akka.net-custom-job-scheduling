@@ -22,7 +22,18 @@ public readonly record struct JobSize(uint Size) : IComparable<JobSize>
         return this - amount;
     }
 
-    public static JobSize operator +(JobSize left, JobSize right) => new(left.Size + right.Size);
+    /// <summary>
+    /// Adds two sizes, clamping at <see cref="uint.MaxValue"/>. The underlying value is unsigned, so
+    /// a plain sum would wrap around - the same hazard <see cref="Reduce"/> guards against on the way
+    /// down. Capacity totals accumulate across every node and every queued job, so an unguarded sum
+    /// could silently wrap to near-zero and make the scheduler believe there is no capacity left.
+    /// </summary>
+    public static JobSize operator +(JobSize left, JobSize right)
+    {
+        var sum = (ulong)left.Size + right.Size;
+
+        return sum > uint.MaxValue ? new JobSize(uint.MaxValue) : new JobSize((uint)sum);
+    }
 
     public static JobSize operator -(JobSize left, JobSize right) => new(left.Size - right.Size);
 

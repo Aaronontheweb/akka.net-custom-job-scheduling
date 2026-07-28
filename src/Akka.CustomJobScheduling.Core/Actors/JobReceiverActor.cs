@@ -65,9 +65,11 @@ public sealed class JobReceiverActor : ReceiveActor
 
         _log.Info("Cancelling job {JobId}: {Reason}", cancel.Id.Value, cancel.Reason);
 
-        // Stopping the child is enough — the tracker already recorded the cancellation, so the
-        // executor must not report anything further about this job.
-        _running.Remove(cancel.Id);
+        // Stop the child, but leave the id in _running until its Terminated arrives. Context.Stop is
+        // asynchronous, so the child keeps its name until it fully dies; clearing the guard now would
+        // let a redelivered ExecuteJob for the same id slip past the duplicate check and try to spawn
+        // a second child under the still-held name, which throws InvalidActorNameException and takes
+        // the whole receiver down. HandleTerminated does the removal once the name is actually free.
         Context.Stop(executor);
     }
 

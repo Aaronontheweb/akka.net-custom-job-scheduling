@@ -145,6 +145,20 @@ public class JobApiTests : IClassFixture<JobApiFactory>
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("a/b")]
+    [InlineData("has space")]
+    [InlineData("with#hash")]
+    public async Task A_submitter_with_special_characters_is_accepted_not_rejected(string submitterId)
+    {
+        // submitterId becomes a shard entity name. Rather than reject an actor-name-illegal value,
+        // the extractor URI-encodes it, so any submitter id just works instead of throwing inside the
+        // submitter parent and timing out the request.
+        var response = await Client().PostAsJsonAsync("/jobs", new { size = 5, submitterId });
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+    }
+
     [Fact]
     public async Task Duplicate_submission_conflicts()
     {
