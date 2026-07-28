@@ -382,91 +382,92 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (Nodes.IsEmpty)
             return ImmutableArray<IJobTrackerEvent>.Empty;
 
-        var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
-        var projected = this;
+        // Build the placement working set once and mutate it as we go, instead of re-deriving each
+        // node's queue and committed load from a full scan of every job on every candidate lookup -
+        // which made a placement pass quadratic in the backlog. `inUse` is capacity consumed per node
+        // (it only grows in phase 2, as jobs actually start); `queues` holds each node's committed-but-
+        // not-running jobs in FIFO order; `queuedSize` is the running total of each queue.
+        var inUse = Nodes.ToDictionary(entry => entry.Key, entry => entry.Value.CapacityInUse);
+        var queues = Nodes.Keys.ToDictionary(address => address, _ => new List<TrackedJob>());
+        var queuedSize = Nodes.Keys.ToDictionary(address => address, _ => JobSize.Zero);
 
-        projected = projected.Dispatch(now, events);
-        projected = projected.Run(now, events);
+        foreach (var job in Jobs.Values)
+        {
+            if (job.Status == JobStatus.Queued
+                && job.AssignedNode is { } committedTo
+                && queues.TryGetValue(committedTo, out var committed))
+            {
+                committed.Add(job);
+                queuedSize[committedTo] += job.Size;
+            }
+        }
+
+        foreach (var queue in queues.Values)
+            queue.Sort(ByQueueOrder);
+
+        var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
+
+        // Phase 1 - dispatch every waiting job onto a node's queue. A large job lands in one node's
+        // queue and waits there while smaller jobs are steered to other nodes, so nothing head-of-line
+        // blocks the global queue.
+        foreach (var id in PendingJobs)
+        {
+            if (!Jobs.TryGetValue(id, out var job) || job.Status != JobStatus.Waiting)
+                continue;
+
+            var target = SelectDispatchNode(job.Definition, inUse, queuedSize);
+            if (target is null)
+                continue; // no eligible node at all right now - leave it waiting
+
+            events.Add(new JobTrackerEvents.JobQueued(id, target, now));
+            InsertByQueueOrder(queues[target], job);
+            queuedSize[target] += job.Size;
+        }
+
+        // Phase 2 - each node runs the head of its own queue while it can. Strict per-node FIFO: if the
+        // head doesn't fit yet the node waits and drains toward it rather than running a later job past
+        // it. An oversized head runs alone once the node is idle.
+        foreach (var address in Nodes.Keys)
+        {
+            var queue = queues[address];
+            var node = Nodes[address];
+
+            while (queue.Count > 0 && node.CanRun(inUse[address], queue[0].Definition))
+            {
+                var head = queue[0];
+                events.Add(new JobTrackerEvents.JobScheduled(head.Id, address, now));
+                queue.RemoveAt(0);
+                inUse[address] += head.Size;
+            }
+        }
 
         return events.ToImmutable();
     }
 
     /// <summary>
-    /// Phase 1 — drain the global queue onto per-node queues. Every waiting job is assigned to a
-    /// node big enough to hold it (least-loaded first), or, if none is, to the roomiest node so an
-    /// oversized job still gets somewhere to run.
-    /// </summary>
-    private JobTrackerState Dispatch(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
-    {
-        var projected = this;
-
-        // Snapshot: dispatching removes ids from PendingJobs, so iterate the original list and skip
-        // anything no longer waiting.
-        foreach (var id in PendingJobs)
-        {
-            if (!projected.Jobs.TryGetValue(id, out var job) || job.Status != JobStatus.Waiting)
-                continue;
-
-            var target = projected.SelectDispatchNode(job.Definition);
-            if (target is null)
-                continue; // no eligible node at all right now — leave it waiting
-
-            var queued = new JobTrackerEvents.JobQueued(id, target, now);
-            events.Add(queued);
-            projected = projected.Apply(queued);
-        }
-
-        return projected;
-    }
-
-    /// <summary>
-    /// Phase 2 — each node runs the head of its own queue as soon as it can. Strict per-node FIFO:
-    /// if the head doesn't fit yet, the node waits and drains toward it rather than running a later
-    /// job past it. An oversized job at the head runs alone once the node is idle.
-    /// </summary>
-    private JobTrackerState Run(DateTimeOffset now, ImmutableArray<IJobTrackerEvent>.Builder events)
-    {
-        var projected = this;
-
-        foreach (var address in Nodes.Keys)
-        {
-            while (true)
-            {
-                var head = projected.NodeQueue(address).FirstOrDefault();
-                if (head is null)
-                    break;
-
-                if (!projected.Nodes.TryGetValue(address, out var node) || !node.CanRun(head.Definition))
-                    break;
-
-                var scheduled = new JobTrackerEvents.JobScheduled(head.Id, address, now);
-                events.Add(scheduled);
-                projected = projected.Apply(scheduled);
-            }
-        }
-
-        return projected;
-    }
-
-    /// <summary>
-    /// Which node a waiting job is dispatched to.
+    /// Which node a waiting job is dispatched to, given the load already committed this pass.
     /// </summary>
     /// <remarks>
     /// First choice is the least-loaded eligible node big enough to hold the job, ties broken by
     /// address; "loaded" is running plus already-queued work, so a burst spreads across the cluster.
-    /// If nothing is big enough, the job is oversized — it still has to run, so it goes to the
-    /// roomiest eligible node and will occupy it exclusively. <c>null</c> only when there is no
-    /// eligible node at all, in which case the job stays waiting.
+    /// If nothing is big enough, the job is oversized - it still has to run, so it goes to the roomiest
+    /// eligible node and will occupy it exclusively. Null only when there is no eligible node at all,
+    /// in which case the job stays waiting.
     /// </remarks>
-    private Address? SelectDispatchNode(JobDefinition job)
+    private Address? SelectDispatchNode(
+        JobDefinition job,
+        IReadOnlyDictionary<Address, JobSize> inUse,
+        IReadOnlyDictionary<Address, JobSize> queuedSize)
     {
         var eligible = Nodes.Values.Where(node => node.IsEligible).ToList();
         if (eligible.Count == 0)
             return null;
 
+        JobSize Load(NodeStatus node) => inUse[node.NodeAddress] + queuedSize[node.NodeAddress];
+
         var fitting = eligible
             .Where(node => node.MaximumCapacity >= job.Size)
-            .OrderBy(CommittedLoad)
+            .OrderBy(Load)
             .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
             .ToList();
 
@@ -475,31 +476,30 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
         return eligible
             .OrderByDescending(node => node.MaximumCapacity)
-            .ThenBy(CommittedLoad)
+            .ThenBy(Load)
             .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
             .First()
             .NodeAddress;
     }
 
-    /// <summary>Running plus queued work committed to a node.</summary>
-    private JobSize CommittedLoad(NodeStatus node) =>
-        node.CapacityInUse + QueuedSizeOn(node.NodeAddress);
+    /// <summary>FIFO order within a node's queue: submission time, then id.</summary>
+    private static int ByQueueOrder(TrackedJob left, TrackedJob right)
+    {
+        var bySubmission = left.SubmittedAt.CompareTo(right.SubmittedAt);
 
-    private JobSize QueuedSizeOn(Address address) =>
-        Total(NodeQueue(address).Select(job => job.Size));
+        return bySubmission != 0
+            ? bySubmission
+            : string.CompareOrdinal(left.Id.Value, right.Id.Value);
+    }
 
-    /// <summary>
-    /// A node's queue: jobs committed to it but not yet running, ordered FIFO by submission.
-    /// </summary>
-    /// <remarks>
-    /// Derived, not stored — a job's node lives only on its <see cref="TrackedJob"/>, so there's no
-    /// second structure that could drift out of sync with it.
-    /// </remarks>
-    public IEnumerable<TrackedJob> NodeQueue(Address address) =>
-        Jobs.Values
-            .Where(job => job.Status == JobStatus.Queued && Equals(job.AssignedNode, address))
-            .OrderBy(job => job.SubmittedAt)
-            .ThenBy(job => job.Id.Value, StringComparer.Ordinal);
+    private static void InsertByQueueOrder(List<TrackedJob> queue, TrackedJob job)
+    {
+        var index = queue.Count;
+        while (index > 0 && ByQueueOrder(queue[index - 1], job) > 0)
+            index--;
+
+        queue.Insert(index, job);
+    }
 
     // ------------------------------------------------------------------
     // Apply: event -> new state
@@ -722,17 +722,34 @@ public sealed record JobTrackerState : IJobTrackerDomain
     /// <summary>Answers <see cref="JobTrackerQueries.GetQueueStatus"/>.</summary>
     public JobTrackerQueryResponses.QueueStatus GetQueueStatus()
     {
-        var waiting = Jobs.Values.Count(job => job.Status == JobStatus.Waiting);
-        var queued = Jobs.Values.Count(job => job.Status == JobStatus.Queued);
+        var waiting = 0;
+        var queued = 0;
+        var running = 0;
+        var queuedWork = JobSize.Zero;
 
-        var notRunning = Jobs.Values
-            .Where(job => job.Status is JobStatus.Waiting or JobStatus.Queued)
-            .Select(job => job.Size);
+        // One pass over the jobs for all four aggregates rather than four separate scans.
+        foreach (var job in Jobs.Values)
+        {
+            switch (job.Status)
+            {
+                case JobStatus.Waiting:
+                    waiting++;
+                    queuedWork += job.Size;
+                    break;
+                case JobStatus.Queued:
+                    queued++;
+                    queuedWork += job.Size;
+                    break;
+                case JobStatus.Running:
+                    running++;
+                    break;
+            }
+        }
 
         return new JobTrackerQueryResponses.QueueStatus(
             WaitingCount: waiting,
-            RunningCount: Jobs.Values.Count(job => job.Status == JobStatus.Running),
-            QueuedWork: Total(notRunning),
+            RunningCount: running,
+            QueuedWork: queuedWork,
             TotalCapacity: Total(Nodes.Values.Select(node => node.MaximumCapacity)),
             AvailableCapacity: Total(EligibleNodes().Select(node => node.AvailableCapacity)),
             Nodes: NodesByAvailability(),

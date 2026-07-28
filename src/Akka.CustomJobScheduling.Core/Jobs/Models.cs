@@ -35,16 +35,19 @@ public sealed record NodeStatus(
     public bool HasCapacityFor(JobDefinition job) => AvailableCapacity >= job.Size;
 
     /// <summary>
-    /// Whether this node can start <paramref name="job"/> right now.
+    /// Whether this node can start <paramref name="job"/> given <paramref name="inUse"/> capacity
+    /// already committed to it. During a placement pass that includes jobs the pass has just scheduled
+    /// but not yet folded into <see cref="CapacityInUse"/>, so pass the running in-pass total.
     /// </summary>
     /// <remarks>
-    /// Either the job fits within free capacity, or it's larger than the node can ever hold and the
-    /// node is idle — in which case it runs alone and overcommits. An oversized job has to run
+    /// Either the job fits within the remaining capacity, or it's larger than the node can ever hold
+    /// and the node is idle - in which case it runs alone and overcommits. An oversized job has to run
     /// somewhere; refusing it forever isn't an option, so it takes a whole node to itself.
     /// </remarks>
-    public bool CanRun(JobDefinition job) =>
+    public bool CanRun(JobSize inUse, JobDefinition job) =>
         IsEligible &&
-        (HasCapacityFor(job) || (job.Size > MaximumCapacity && CapacityInUse == JobSize.Zero));
+        (MaximumCapacity.Reduce(inUse) >= job.Size ||
+         (job.Size > MaximumCapacity && inUse == JobSize.Zero));
 
     /// <summary>
     /// A node that has just joined the cluster with nothing running on it yet.
