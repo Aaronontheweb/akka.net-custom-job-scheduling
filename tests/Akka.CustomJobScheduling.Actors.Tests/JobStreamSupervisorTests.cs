@@ -4,7 +4,6 @@ using Akka.CustomJobScheduling.Core.Actors.Streaming;
 using Akka.CustomJobScheduling.Core.JobTracker;
 using Akka.CustomJobScheduling.Core.Jobs;
 using Akka.Hosting;
-using Xunit.Abstractions;
 
 namespace Akka.CustomJobScheduling.Actors.Tests;
 
