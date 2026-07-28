@@ -211,6 +211,13 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
             onComplete?.Invoke();
 
+            // Queue watchers get one capacity snapshot per batch, not one per event. A placement burst
+            // or a node-loss fan-out persists many events, and recomputing and broadcasting the full
+            // queue status for each was O(events x jobs); the per-job JobStatusChanged pushes still
+            // happen per event in React.
+            if (_queueSubscribers.Count > 0)
+                NotifyQueueWatchers(_state.GetQueueStatus());
+
             // Measure cadence from the last snapshot's sequence, not against an exact multiple: a
             // multi-event batch (submit-with-placement, a node-loss fan-out) advances LastSequenceNr in
             // one step and would otherwise leap straight over the boundary and skip the snapshot.
@@ -248,11 +255,6 @@ public sealed class JobTrackerActor : ReceivePersistentActor, IWithTimers
 
         if (@event is IWithJobId withJobId)
             NotifyAbout(withJobId.Id);
-
-        // Capacity moves on job transitions as well as topology changes, so refresh watchers after
-        // every event rather than trying to guess which ones matter.
-        if (_queueSubscribers.Count > 0)
-            NotifyQueueWatchers(_state.GetQueueStatus());
     }
 
     private void Dispatch(JobTrackerEvents.JobScheduled scheduled)
