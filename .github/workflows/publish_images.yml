@@ -116,11 +116,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dotnet publish "${{ matrix.project }}" \
-            -c Release \
-            --os linux --arch x64 \
-            /t:PublishContainer \
-            -p:ContainerRegistry=ghcr.io \
-            -p:ContainerRepository="${{ steps.img.outputs.repository }}" \
-            -p:ContainerImageTags="${{ steps.img.outputs.tags }}" \
-            -p:RepositoryUrl="https://github.com/${{ github.repository }}"
+          # Publish each tag on its own with the singular ContainerImageTag. Passing
+          # several tags via ContainerImageTags="a;b" breaks on the CLI: the shell
+          # strips the quotes and MSBuild parses the ';b' as a stray switch
+          # (MSB1006). The compile is cached after the first pass, so the extra tags
+          # only re-layer and push.
+          IFS=';' read -ra image_tags <<< "${{ steps.img.outputs.tags }}"
+          for tag in "${image_tags[@]}"; do
+            echo "Publishing ${{ steps.img.outputs.repository }}:${tag}"
+            dotnet publish "${{ matrix.project }}" \
+              -c Release \
+              --os linux --arch x64 \
+              /t:PublishContainer \
+              -p:ContainerRegistry=ghcr.io \
+              -p:ContainerRepository="${{ steps.img.outputs.repository }}" \
+              -p:ContainerImageTag="${tag}" \
+              -p:RepositoryUrl="https://github.com/${{ github.repository }}"
+          done
