@@ -63,7 +63,7 @@ One deliberate call: an unreachable node keeps its jobs. The cluster waits until
 
 ## When it scales
 
-Add worker replicas and you add capacity. The AppHost runs three; change the replica count and the tracker starts placing work on the new nodes as they join. Dispatch already balances across whatever's there.
+Add worker replicas and you add capacity. The AppHost runs three; change the replica count and the tracker redistributes queued work onto new nodes as they join, while jobs already executing stay where they are. New submissions continue to balance across the full worker pool.
 
 The singleton isn't the bottleneck it sounds like. It makes placement decisions and records events. It doesn't run jobs or move their data - the workers do that, in parallel. The submitters are cluster-sharded and the per-node work is independent, so the parts that actually carry load scale out on their own; the tracker just coordinates.
 

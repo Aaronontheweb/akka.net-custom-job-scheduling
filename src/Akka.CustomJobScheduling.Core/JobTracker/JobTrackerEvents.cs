@@ -51,8 +51,9 @@ public static class JobTrackerEvents
     }
 
     /// <summary>
-    /// A job was dispatched from the global queue into a specific node's queue. It's committed to
-    /// that node but not yet running — no capacity is consumed until <see cref="JobScheduled"/>.
+    /// A job was assigned to a specific node's queue, either from the global queue or by a scale-out
+    /// rebalance. It's committed to that node but not yet running — no capacity is consumed until
+    /// <see cref="JobScheduled"/>.
     /// </summary>
     public sealed record JobQueued(JobId Id, Address NodeAddress, DateTimeOffset OccurredAt)
         : IJobTrackerEvent, IWithJobId;
