@@ -133,3 +133,32 @@ jobs:
               -p:ContainerImageTag="${tag}" \
               -p:RepositoryUrl="https://github.com/${{ github.repository }}"
           done
+
+  create-release:
+    name: GitHub Release
+    needs: images
+    # Only on a tag push (not PRs or manual dispatch): creating the release is the
+    # tag's job. CI does it - you only push the tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A tag with a '-' (e.g. 0.2.0-beta.1) is a prerelease and must not become
+          # the repo's "Latest" release. Notes are auto-generated from the merged PRs
+          # and commits since the previous tag.
+          prerelease=""
+          case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag \
+            $prerelease
