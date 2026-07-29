@@ -54,7 +54,7 @@ jobs:
             project: src/Akka.CustomJobScheduling.Api/Akka.CustomJobScheduling.Api.csproj
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Install .NET SDK
         uses: actions/setup-dotnet@v4
@@ -145,7 +145,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Create GitHub Release with generated notes
         env:
