@@ -191,7 +191,12 @@ public sealed record JobTrackerState : IJobTrackerDomain
             _ => ImmutableArray<IJobTrackerEvent>.Empty
         };
 
-        var placements = Fold(events).PlacePendingJobs(now);
+        var stateAfterFacts = Fold(events);
+        var capacityExpanded = events
+            .OfType<JobTrackerEvents.NodeAdded>()
+            .Any(added => stateAfterFacts.Nodes.TryGetValue(added.NodeAddress, out var node)
+                          && node.IsEligible);
+        var placements = stateAfterFacts.PlacePendingJobs(now, capacityExpanded);
         return events.AddRange(placements);
     }
 
@@ -370,14 +375,17 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
     /// <summary>
     /// Places whatever it can from the pending queue, in two phases: dispatch every waiting job onto
-    /// a node's queue, then start the head of each node's queue that has room to run.
+    /// a node's queue, then start the head of each node's queue that has room to run. When
+    /// <paramref name="rebalanceQueued"/> is true, jobs that have not started are redistributed first.
     /// </summary>
     /// <remarks>
     /// The two phases are what avoid head-of-line blocking. A job that needs a whole node doesn't
     /// stall the ones behind it: it's dispatched into one node's queue while smaller jobs are steered
     /// to other nodes and start right away.
     /// </remarks>
-    public ImmutableArray<IJobTrackerEvent> PlacePendingJobs(DateTimeOffset now)
+    public ImmutableArray<IJobTrackerEvent> PlacePendingJobs(
+        DateTimeOffset now,
+        bool rebalanceQueued = false)
     {
         if (Nodes.IsEmpty)
             return ImmutableArray<IJobTrackerEvent>.Empty;
@@ -395,6 +403,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         {
             if (job.Status == JobStatus.Queued
                 && job.AssignedNode is { } committedTo
+                && !rebalanceQueued
                 && queues.TryGetValue(committedTo, out var committed))
             {
                 committed.Add(job);
@@ -407,19 +416,35 @@ public sealed record JobTrackerState : IJobTrackerDomain
 
         var events = ImmutableArray.CreateBuilder<IJobTrackerEvent>();
 
-        // Phase 1 - dispatch every waiting job onto a node's queue. A large job lands in one node's
-        // queue and waits there while smaller jobs are steered to other nodes, so nothing head-of-line
-        // blocks the global queue.
-        foreach (var id in PendingJobs)
+        // During scale-out, rebuild every not-yet-running assignment against the fixed running load.
+        // Otherwise preserve the existing node queues and place only globally waiting jobs.
+        IEnumerable<TrackedJob> jobsToPlace = rebalanceQueued
+            ? Jobs.Values
+                .Where(job => job.Status is JobStatus.Waiting or JobStatus.Queued)
+                .OrderBy(job => job, Comparer<TrackedJob>.Create(ByQueueOrder))
+            : PendingJobs
+                .Where(Jobs.ContainsKey)
+                .Select(id => Jobs[id]);
+
+        // Phase 1 - dispatch jobs onto node queues. A large job lands in one node's queue and waits
+        // there while smaller jobs are steered to other nodes, so nothing head-of-line blocks the
+        // global queue.
+        foreach (var job in jobsToPlace)
         {
-            if (!Jobs.TryGetValue(id, out var job) || job.Status != JobStatus.Waiting)
+            if (job.Status is not (JobStatus.Waiting or JobStatus.Queued))
                 continue;
 
-            var target = SelectDispatchNode(job.Definition, inUse, queuedSize);
+            var target = SelectDispatchNode(
+                job.Definition,
+                inUse,
+                queuedSize,
+                job.Status == JobStatus.Queued ? job.AssignedNode : null);
             if (target is null)
                 continue; // no eligible node at all right now - leave it waiting
 
-            events.Add(new JobTrackerEvents.JobQueued(id, target, now));
+            if (job.Status == JobStatus.Waiting || !Equals(job.AssignedNode, target))
+                events.Add(new JobTrackerEvents.JobQueued(job.Id, target, now));
+
             InsertByQueueOrder(queues[target], job);
             queuedSize[target] += job.Size;
         }
@@ -448,8 +473,9 @@ public sealed record JobTrackerState : IJobTrackerDomain
     /// Which node a waiting job is dispatched to, given the load already committed this pass.
     /// </summary>
     /// <remarks>
-    /// First choice is the least-loaded eligible node big enough to hold the job, ties broken by
-    /// address; "loaded" is running plus already-queued work, so a burst spreads across the cluster.
+    /// First choice is the least-loaded eligible node big enough to hold the job. A queued job keeps
+    /// its current assignment on a tie, then remaining ties are broken by address. "Loaded" is
+    /// running plus already-queued work, so a burst spreads across the cluster.
     /// If nothing is big enough, the job is oversized - it still has to run, so it goes to the roomiest
     /// eligible node and will occupy it exclusively. Null only when there is no eligible node at all,
     /// in which case the job stays waiting.
@@ -457,7 +483,8 @@ public sealed record JobTrackerState : IJobTrackerDomain
     private Address? SelectDispatchNode(
         JobDefinition job,
         IReadOnlyDictionary<Address, JobSize> inUse,
-        IReadOnlyDictionary<Address, JobSize> queuedSize)
+        IReadOnlyDictionary<Address, JobSize> queuedSize,
+        Address? preferredNode = null)
     {
         var eligible = Nodes.Values.Where(node => node.IsEligible).ToList();
         if (eligible.Count == 0)
@@ -468,6 +495,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         var fitting = eligible
             .Where(node => node.MaximumCapacity >= job.Size)
             .OrderBy(Load)
+            .ThenBy(node => Equals(node.NodeAddress, preferredNode) ? 0 : 1)
             .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
             .ToList();
 
@@ -477,6 +505,7 @@ public sealed record JobTrackerState : IJobTrackerDomain
         return eligible
             .OrderByDescending(node => node.MaximumCapacity)
             .ThenBy(Load)
+            .ThenBy(node => Equals(node.NodeAddress, preferredNode) ? 0 : 1)
             .ThenBy(node => node.NodeAddress.ToString(), StringComparer.Ordinal)
             .First()
             .NodeAddress;
@@ -551,8 +580,8 @@ public sealed record JobTrackerState : IJobTrackerDomain
         if (!Jobs.TryGetValue(e.Id, out var job))
             return this;
 
-        // Out of the global queue, into the node's queue. No capacity moves — a queued job isn't
-        // running yet, so it doesn't touch CapacityInUse.
+        // Assign or reassign the node queue. No capacity moves — a queued job isn't running yet, so
+        // it doesn't touch CapacityInUse.
         return WithJob(job.QueueOn(e.NodeAddress, e.OccurredAt))
             .Dequeue(e.Id);
     }

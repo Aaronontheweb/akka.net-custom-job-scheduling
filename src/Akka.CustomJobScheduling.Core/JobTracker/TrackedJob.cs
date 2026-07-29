@@ -63,8 +63,8 @@ public sealed record TrackedJob(
             StartedAt: null);
 
     /// <summary>
-    /// Dispatched from the global queue into a node's queue. Committed to that node but not yet
-    /// running, so it takes no capacity yet — <see cref="StartedAt"/> stays null.
+    /// Assigned or reassigned to a node's queue. Committed to that node but not yet running, so it
+    /// takes no capacity yet — <see cref="StartedAt"/> stays null.
     /// </summary>
     public TrackedJob QueueOn(Address node, DateTimeOffset at) =>
         this with

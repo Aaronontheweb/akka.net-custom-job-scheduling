@@ -152,4 +152,28 @@ public class JobTrackerActorTests : JobSchedulingTestKit
         Assert.Equal(new JobSize(80), queue.QueuedWork);
         Assert.Equal(new JobSize(40), queue.AvailableCapacity);
     }
+
+    [Fact]
+    public async Task Adding_a_worker_runs_queued_work_without_moving_running_work()
+    {
+        Membership.MemberUp("node-a", 100);
+        await AwaitAssertAsync(async () =>
+            Assert.Single((await QueueAsync()).Nodes));
+
+        await SubmitAsync("running", 100);
+        var running = await AwaitStatusAsync("running", JobStatus.Running);
+        Assert.Equal(NodeAddress("node-a"), running.AssignedNode);
+
+        await SubmitAsync("queued", 100);
+        var queued = await AwaitStatusAsync("queued", JobStatus.Queued);
+        Assert.Equal(NodeAddress("node-a"), queued.AssignedNode);
+
+        Membership.MemberUp("node-b", 100);
+
+        queued = await AwaitStatusAsync("queued", JobStatus.Running);
+        running = await FoundAsync("running");
+        Assert.Equal(NodeAddress("node-b"), queued.AssignedNode);
+        Assert.Equal(JobStatus.Running, running.Progress.Status);
+        Assert.Equal(NodeAddress("node-a"), running.AssignedNode);
+    }
 }
