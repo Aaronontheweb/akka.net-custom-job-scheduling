@@ -1,0 +1,126 @@
+name: Publish Images
+
+# Container image pipeline for the worker and API services.
+#
+# Runs ONLY on GitHub-hosted runners and authenticates to GHCR with the built-in
+# GITHUB_TOKEN - it never touches Tailscale, the test lab, or any lab credential.
+# That is what keeps this PUBLIC repo safe: a fork PR cannot reach the lab, and
+# there is no self-hosted / tailnet runner to exploit. The test lab pulls the
+# published images from GHCR out of band.
+#
+# Images are built with the .NET SDK's built-in container target
+# (/t:PublishContainer) - no Dockerfile, no buildx. Tags are bare semver
+# (e.g. 0.1.0), matching the NuGet release convention (no 'v' prefix).
+#
+#   pull_request        -> build both images to a local OCI archive and inspect
+#                          them. Proves the publish works; pushes nothing. Safe
+#                          on fork PRs (GITHUB_TOKEN is read-only, no login).
+#   push tag / dispatch -> publish worker + api to GHCR for real.
+
+on:
+  push:
+    tags:
+      - '*'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Directory.Build.props'
+      - 'Directory.Packages.props'
+      - 'global.json'
+      - 'NuGet.Config'
+      - '.github/workflows/publish_images.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (bare semver, e.g. 0.1.0)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  images:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: worker
+            project: src/Akka.CustomJobScheduling/Akka.CustomJobScheduling.csproj
+          - image: api
+            project: src/Akka.CustomJobScheduling.Api/Akka.CustomJobScheduling.Api.csproj
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: ./global.json
+
+      # Registry auth is only needed when we actually push (tag / manual dispatch).
+      # PRs never log in or push - including fork PRs, where GITHUB_TOKEN is
+      # read-only - so image validation stays credential-free.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image coordinates
+        id: img
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"          # GHCR requires a lowercase owner
+          version="${{ github.event.inputs.tag || github.ref_name }}"
+          # Stable releases (no '-') also move :latest; prereleases get only their exact tag.
+          case "$version" in
+            *-*) tags="${version}" ;;
+            *)   tags="${version};latest" ;;
+          esac
+          echo "repository=${owner}/akka-custom-job-scheduling/${{ matrix.image }}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      # --- Pull requests: build to a local OCI archive, load it, and inspect it.
+      #     Exercises the exact publish path minus the registry push. ---
+      - name: Validate image build (no push)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ steps.img.outputs.repository }}:ci-${{ github.run_id }}"
+          archive="${RUNNER_TEMP}/${{ matrix.image }}.tar.gz"
+          dotnet publish "${{ matrix.project }}" \
+            -c Release \
+            --os linux --arch x64 \
+            /t:PublishContainer \
+            -p:ContainerRepository="${{ steps.img.outputs.repository }}" \
+            -p:ContainerImageTag="ci-${{ github.run_id }}" \
+            -p:ContainerArchiveOutputPath="${archive}"
+          echo "Loading and inspecting the built image..."
+          docker load --input "${archive}"
+          docker image inspect "${ref}" \
+            --format '::notice::built {{.Os}}/{{.Architecture}} image {{.Id}} ({{len .RootFS.Layers}} layers)'
+
+      # --- Tag push / manual dispatch: publish to GHCR for real. RepositoryUrl
+      #     stamps org.opencontainers.image.source so the package links to this
+      #     repo (provenance + repo-inherited management). ---
+      - name: Publish image to GHCR
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish "${{ matrix.project }}" \
+            -c Release \
+            --os linux --arch x64 \
+            /t:PublishContainer \
+            -p:ContainerRegistry=ghcr.io \
+            -p:ContainerRepository="${{ steps.img.outputs.repository }}" \
+            -p:ContainerImageTags="${{ steps.img.outputs.tags }}" \
+            -p:RepositoryUrl="https://github.com/${{ github.repository }}"
