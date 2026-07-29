@@ -1,0 +1,82 @@
+name: jobsched-demo
+
+# Runs the whole distributed job scheduler locally: Redis (service discovery AND
+# Akka.Persistence), a scalable pool of worker nodes, and the API + dashboard.
+#
+#   docker compose up -d --scale worker=3     # start a 3-node cluster + API
+#   open http://localhost:8080                # the live dashboard
+#   docker compose up -d --scale worker=5     # add nodes; watch work spread onto them
+#   docker stop jobsched-demo-worker-3        # kill a node; watch its jobs rebalance
+#   docker compose down                       # tear everything down
+#
+# Each app container advertises its own container IP for Akka.Remote (via `hostname -i`
+# in the entrypoint) and finds its peers through Redis discovery. The "akka-discovery"
+# connection string is passed as a CLI arg because Docker drops env-var names that
+# contain hyphens.
+#
+# Images default to the published GHCR tags. There is no Dockerfile - the images are
+# built by the .NET SDK container target. To build and run local images instead:
+#
+#   dotnet publish src/Akka.CustomJobScheduling/Akka.CustomJobScheduling.csproj \
+#     -c Release --os linux --arch x64 /t:PublishContainer \
+#     -p:ContainerRepository=jobsched/worker -p:ContainerImageTag=local
+#   dotnet publish src/Akka.CustomJobScheduling.Api/Akka.CustomJobScheduling.Api.csproj \
+#     -c Release --os linux --arch x64 /t:PublishContainer \
+#     -p:ContainerRepository=jobsched/api -p:ContainerImageTag=local
+#   JOBSCHED_WORKER_IMAGE=jobsched/worker:local JOBSCHED_API_IMAGE=jobsched/api:local \
+#     docker compose up -d --scale worker=3
+
+x-app-env: &app-env
+  ASPNETCORE_URLS: "http://+:8080"
+  Akka__Cluster__Enabled: "true"
+  Akka__Cluster__ServiceName: "custom-job-scheduling"
+  Akka__Cluster__Clustering__ProviderType: "Redis"
+  Akka__Cluster__RemotePort: "8081"
+  Akka__Cluster__ManagementPort: "8558"
+  Akka__Cluster__RequiredContactPointsNr: "1"
+  # No OpenTelemetry collector in this self-contained stack; silence the exporter.
+  OTEL_SDK_DISABLED: "true"
+
+x-app-healthcheck: &app-healthcheck
+  # No curl/wget in the aspnet image, so probe /healthz/ready over bash's /dev/tcp.
+  # /healthz/ready returns 200 only once this node is a cluster member (Up) and Redis
+  # is reachable - exactly the readiness the app itself defines.
+  test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /healthz/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+  interval: 10s
+  timeout: 5s
+  retries: 10
+  start_period: 45s
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    image: ${JOBSCHED_WORKER_IMAGE:-ghcr.io/aaronontheweb/akka-custom-job-scheduling/worker:latest}
+    entrypoint: ["/bin/sh", "-c", "export Akka__Cluster__PublicHostName=$$(hostname -i | awk '{print $$1}'); exec dotnet /app/Akka.CustomJobScheduling.dll --ConnectionStrings:akka-discovery=redis:6379"]
+    environment:
+      <<: *app-env
+      Jobs__NodeCapacity: "100"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
+
+  api:
+    image: ${JOBSCHED_API_IMAGE:-ghcr.io/aaronontheweb/akka-custom-job-scheduling/api:latest}
+    entrypoint: ["/bin/sh", "-c", "export Akka__Cluster__PublicHostName=$$(hostname -i | awk '{print $$1}'); exec dotnet /app/Akka.CustomJobScheduling.Api.dll --ConnectionStrings:akka-discovery=redis:6379"]
+    environment:
+      <<: *app-env
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck: *app-healthcheck
